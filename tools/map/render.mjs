@@ -1,6 +1,6 @@
 // Renders the bundled route map backgrounds from OpenFreeMap vector tiles with MapLibre GL JS in
 // headless Chrome. See README.md. The image covers exactly fitRoute(...).bounds, so a route projected
-// with toPx lands on the roads of the 1000x1000 image space.
+// with toPx lands on the roads of the 1000x1440 image space.
 import { mkdir, readFile, writeFile } from 'node:fs/promises';
 import { createRequire } from 'node:module';
 import { dirname, join, resolve } from 'node:path';
@@ -26,7 +26,7 @@ const MAX_PARALLEL = 4; // OpenFreeMap terms, together with the two caps below.
 const MAX_REQUESTS = 3000;
 const MAX_BYTES = 50 * 1024 * 1024;
 const MAX_FILE_BYTES = 1.5 * 1024 * 1024;
-const OUTPUT_SCALE = 2; // 2000x2000 output for the 1000x1000 image space.
+const OUTPUT_SCALE = 2; // 2000x2880 output for the 1000x1440 image space.
 const ATTRIBUTION = '© OpenStreetMap contributors · OpenFreeMap © OpenMapTiles';
 
 const { values: args } = parseArgs({
@@ -124,7 +124,7 @@ const placeLabel = (k, id, classes, size, color, font, padding) => ({
   paint: { 'text-color': color, 'text-halo-color': COLORS.halo, 'text-halo-width': 1.6 * k },
 });
 
-// Sizes are written for the 1000x1000 image at its own zoom; k rescales them to the enlarged map.
+// Sizes are written for the 1000x1440 image at its own zoom; k rescales them to the enlarged map.
 function buildStyle(extraTileZoom) {
   const k = 2 ** extraTileZoom;
   const stops = (list) => list.flatMap((value, i) => (i % 2 ? value * k : value + extraTileZoom));

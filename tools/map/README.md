@@ -1,9 +1,9 @@
 # Map backgrounds
 
-`render.mjs` renders the `app/src/main/assets/maps/<id>.webp` of every route in its `ROUTES` at 2000x2000
+`render.mjs` renders the `app/src/main/assets/maps/<id>.webp` of every route in its `ROUTES` at 2000x2880
 from OpenFreeMap vector tiles, with MapLibre GL JS in headless Chrome. Each image covers exactly
 `fitRoute(coordinates).bounds` from `tools/scenario/projection.mjs` in Web Mercator, so a route projected
-with `toPx` lands on the roads of the 1000x1000 image space. The route itself is not drawn. The script
+with `toPx` lands on the roads of the 1000x1440 image space. The route itself is not drawn. The script
 aborts if the camera misses the bounds by more than 0.01 px.
 
 ## Run

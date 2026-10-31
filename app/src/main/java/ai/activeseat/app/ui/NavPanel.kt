@@ -30,12 +30,12 @@ import androidx.compose.ui.unit.IntOffset
 import androidx.compose.ui.unit.IntSize
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
-import kotlin.math.min
+import kotlin.math.max
 import kotlin.math.roundToInt
 
 private const val MAP_ATTRIBUTION = "© OpenStreetMap contributors · OpenFreeMap © OpenMapTiles"
 const val MAP_WIDTH_PX = 1000f
-const val MAP_HEIGHT_PX = 1000f
+const val MAP_HEIGHT_PX = 1440f
 private const val GRID_STEP_PX = 100
 
 private val Background = Color(0xFF10161C)
@@ -50,9 +50,9 @@ private val Label = Color(0xFFB0BEC5)
 /** How route coordinates land on a canvas: `canvas = offset + scale * route`. */
 data class MapFit(val scale: Float, val offsetX: Float, val offsetY: Float)
 
-/** Scales the route space to fit the canvas without distortion, top aligned so the card never covers the map. */
+/** Scales the route space to cover the canvas without distortion, top aligned. The card sits over the map's lower part. */
 fun fitMap(canvasWidth: Float, canvasHeight: Float): MapFit {
-    val scale = min(canvasWidth / MAP_WIDTH_PX, canvasHeight / MAP_HEIGHT_PX)
+    val scale = max(canvasWidth / MAP_WIDTH_PX, canvasHeight / MAP_HEIGHT_PX)
     return MapFit(scale, (canvasWidth - scale * MAP_WIDTH_PX) / 2, 0f)
 }
 

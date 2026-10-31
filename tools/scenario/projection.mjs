@@ -1,6 +1,7 @@
 // Web Mercator fit of a route into the app's map image space. The scenario builder and the map
 // renderer share this, so routePx lands exactly on the rendered map.
-export const MAP = { width: 1000, height: 1000, margin: 80 };
+// Portrait to fill the app's map panel. bottomMargin keeps the route above the guidance card.
+export const MAP = { width: 1000, height: 1440, margin: 80, bottomMargin: 480 };
 
 const mercator = ([lon, lat]) => {
   const rad = (lat * Math.PI) / 180;
@@ -20,10 +21,10 @@ export function fitRoute(coordinates) {
   const [minX, maxX, minY, maxY] = [Math.min(...xs), Math.max(...xs), Math.min(...ys), Math.max(...ys)];
   const scale = Math.min(
     (MAP.width - 2 * MAP.margin) / (maxX - minX),
-    (MAP.height - 2 * MAP.margin) / (maxY - minY),
+    (MAP.height - MAP.margin - MAP.bottomMargin) / (maxY - minY),
   );
   const offsetX = (MAP.width - scale * (maxX - minX)) / 2 - scale * minX;
-  const offsetY = (MAP.height - scale * (maxY - minY)) / 2 - scale * minY;
+  const offsetY = MAP.margin + (MAP.height - MAP.margin - MAP.bottomMargin - scale * (maxY - minY)) / 2 - scale * minY;
   const toPx = (lonLat) => {
     const [x, y] = mercator(lonLat);
     return [Math.round(offsetX + scale * x), Math.round(offsetY + scale * y)];
