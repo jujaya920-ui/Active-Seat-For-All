@@ -1,3 +1,13 @@
 git_ignore/
 .DS_Store
 pleos-sample-vehicle-app/
+
+# Build
+.gradle/
+build/
+.kotlin/
+local.properties
+.idea/
+node_modules/
+.vercel/
+.env*
