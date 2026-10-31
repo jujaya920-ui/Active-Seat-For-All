@@ -20,6 +20,9 @@ data class ScenarioFrame(
     val turnSignal: String,
 )
 
+/** The part of a long route played on stage, in scenario seconds. */
+data class DemoWindow(val fromSec: Double, val toSec: Double)
+
 data class Scenario(
     val id: String,
     val title: String,
@@ -29,8 +32,19 @@ data class Scenario(
     val turns: List<RouteMark>,
     val frontEvents: List<RouteMark>,
     val timeline: List<ScenarioFrame>,
+    val demoWindow: DemoWindow? = null,
 ) {
     val durationSec: Double get() = timeline.last().t
+
+    /** Distance driven by time t, trapezoidal like the navigator's integration. */
+    fun distanceAtM(t: Double): Double {
+        var metres = 0.0
+        for ((a, b) in timeline.zipWithNext()) {
+            if (a.t >= t) break
+            metres += (a.speedKph + b.speedKph) / 2 / 3.6 * (minOf(b.t, t) - a.t)
+        }
+        return metres
+    }
 
     /** Linear between rows for analog values; the turn signal holds the earlier row's value. */
     fun frameAt(t: Double): ScenarioFrame {
@@ -93,6 +107,7 @@ fun parseScenario(json: String): Scenario {
         turns = root.getJSONArray("turns").objects().map { it.toRouteMark() },
         frontEvents = root.getJSONArray("frontEvents").objects().map { it.toRouteMark() },
         timeline = timeline,
+        demoWindow = root.optJSONObject("demoWindow")?.let { DemoWindow(it.getDouble("fromSec"), it.getDouble("toSec")) },
     )
 }
 

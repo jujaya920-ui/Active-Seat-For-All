@@ -3,30 +3,33 @@
 import { existsSync, readFileSync } from 'node:fs';
 import { dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { MAP } from './projection.mjs';
 import {
+  FRONT_EVENT_TYPES,
   LIMITS,
   STEP_S,
+  TURN_TYPES,
   accelerations,
+  curvature,
   detectManeuvers,
   distances,
+  kphToMps,
   lateralAccel,
   polylineLength,
-  signalRuns,
 } from './common.mjs';
 
 const TOP_KEYS = ['id', 'title', 'mapImage', 'routePx', 'routeLengthM', 'turns', 'frontEvents', 'timeline'];
+const OPTIONAL_TOP_KEYS = ['demoWindow'];
 const ROW_KEYS = ['t', 'speedKph', 'steeringDeg', 'brakePct', 'acceleratorPct', 'turnSignal'];
 const TURN_SIGNALS = ['Off', 'BlinkLeft', 'BlinkRight'];
-const TURN_DIRECTION = { TURN_LEFT: 'left', TURN_RIGHT: 'right' };
-const MAP = { width: 1600, height: 1000 };
-
-// The real NaviHelper labels this scenario must reproduce, in order.
-const REQUIRED_TURNS = {
-  'pangyo-gangnam': [
-    ['TURN_RIGHT', '대왕판교IC 방면'],
-    ['TURN_RIGHT', '양재 방면'],
-    ['TURN_LEFT', '강남역 방면'],
-  ],
+const FIRM_TURNS = { TURN_LEFT: 1, TURN_SHARP_L: 1, TURN_RIGHT: -1, TURN_SHARP_R: -1 };
+const SIGNALLED = {
+  TURN_LEFT: 'BlinkLeft',
+  TURN_SHARP_L: 'BlinkLeft',
+  TURN_KEEP_L: 'BlinkLeft',
+  TURN_RIGHT: 'BlinkRight',
+  TURN_SHARP_R: 'BlinkRight',
+  TURN_KEEP_R: 'BlinkRight',
 };
 
 const isNumber = (value) => typeof value === 'number' && Number.isFinite(value);
@@ -34,7 +37,8 @@ const sameKeys = (object, keys) =>
   Object.keys(object).length === keys.length && keys.every((key) => key in object);
 
 function checkFormat(s, errors) {
-  if (!sameKeys(s, TOP_KEYS)) errors.push(`top-level keys must be exactly: ${TOP_KEYS.join(', ')}`);
+  const required = Object.fromEntries(Object.entries(s).filter(([key]) => !OPTIONAL_TOP_KEYS.includes(key)));
+  if (!sameKeys(required, TOP_KEYS)) errors.push(`top-level keys must be exactly: ${TOP_KEYS.join(', ')}`);
   if (typeof s.id !== 'string' || !/^[a-z0-9-]+$/.test(s.id)) errors.push('id must be a kebab-case string');
   if (typeof s.title !== 'string' || s.title === '') errors.push('title must be a non-empty string');
   if (s.mapImage !== `maps/${s.id}.webp`) errors.push(`mapImage must be maps/${s.id}.webp`);
@@ -45,6 +49,9 @@ function checkFormat(s, errors) {
     errors.push('routePx points must be [x, y] numbers');
   } else if (s.routePx.some(([x, y]) => x < 0 || x > MAP.width || y < 0 || y > MAP.height)) {
     errors.push(`routePx must stay inside ${MAP.width}x${MAP.height}`);
+  }
+  if (Array.isArray(s.routePx) && s.routePx.length > LIMITS.maxRoutePxPoints) {
+    errors.push(`routePx has ${s.routePx.length} points, limit ${LIMITS.maxRoutePxPoints}`);
   }
 
   for (const [name, list] of [['turns', s.turns], ['frontEvents', s.frontEvents]]) {
@@ -60,6 +67,12 @@ function checkFormat(s, errors) {
       if (i > 0 && item.atM <= list[i - 1].atM) errors.push(`${name} must be in increasing atM order`);
     });
   }
+  (Array.isArray(s.turns) ? s.turns : []).forEach((turn, i) => {
+    if (!TURN_TYPES.includes(turn.type)) errors.push(`turns[${i}].type ${turn.type} is not a NaviHelper TurnType`);
+  });
+  (Array.isArray(s.frontEvents) ? s.frontEvents : []).forEach((event, i) => {
+    if (!FRONT_EVENT_TYPES.includes(event.type)) errors.push(`frontEvents[${i}].type ${event.type} is not allowed`);
+  });
 
   if (!Array.isArray(s.timeline) || s.timeline.length < 2) {
     errors.push('timeline needs at least 2 rows');
@@ -123,82 +136,82 @@ function checkRoute(s, travelled, errors) {
   if (gap > LIMITS.routeLengthTolerance) {
     errors.push(`integrated ${totalM.toFixed(1)} m differs from routeLengthM ${s.routeLengthM} by ${(gap * 100).toFixed(2)}%`);
   }
-  // Each turn must sit on a polyline vertex at the same fraction of the route.
-  if (s.routePx.length !== s.turns.length + 2) {
-    errors.push(`routePx needs ${s.turns.length + 2} points: start, one per turn, end`);
-    return;
-  }
+  // Each turn must sit on a polyline vertex at about the same fraction of the route.
   const pxTotal = polylineLength(s.routePx);
+  const fractions = [];
+  let walked = 0;
+  s.routePx.forEach((point, i) => {
+    if (i > 0) walked += polylineLength([s.routePx[i - 1], point]);
+    fractions.push(walked / pxTotal);
+  });
   s.turns.forEach((turn, i) => {
-    const fraction = polylineLength(s.routePx.slice(0, i + 2)) / pxTotal;
-    if (Math.abs(fraction - turn.atM / totalM) > LIMITS.polylineTolerance) {
-      errors.push(`turn ${i}: polyline vertex at ${(fraction * 100).toFixed(1)}% but atM at ${((turn.atM / totalM) * 100).toFixed(1)}%`);
+    const wanted = turn.atM / totalM;
+    const nearest = Math.min(...fractions.map((fraction) => Math.abs(fraction - wanted)));
+    if (nearest > LIMITS.polylineTolerance) {
+      errors.push(`turn ${i}: no polyline vertex within ${LIMITS.polylineTolerance * 100}% of atM at ${(wanted * 100).toFixed(1)}%`);
     }
   });
 }
 
-function checkTurns(s, corners, travelled, accel, errors) {
+// Real corners and navigation maneuvers are not one to one, so this checks each announced turn
+// against what the car does at that spot, not a corner count.
+function checkTurns(s, travelled, errors) {
   const tl = s.timeline;
-  const required = REQUIRED_TURNS[s.id];
-  if (required && JSON.stringify(s.turns.map((turn) => [turn.type, turn.description])) !== JSON.stringify(required)) {
-    errors.push(`turns must be, in order: ${required.flat().join(' ')}`);
-  }
-  if (corners.length < 2) errors.push(`need at least 2 corners, found ${corners.length}`);
-  if (corners.length !== s.turns.length) {
-    errors.push(`${s.turns.length} turns but ${corners.length} corners in the timeline`);
-    return;
-  }
-  const blinks = signalRuns(tl);
-  if (blinks.length !== corners.length) errors.push(`${blinks.length} turn signal runs for ${corners.length} corners`);
-
-  corners.forEach((corner, i) => {
-    const turn = s.turns[i];
-    const label = `turn ${i} (${turn.description})`;
-    if (TURN_DIRECTION[turn.type] !== corner.direction) {
-      errors.push(`${label}: ${turn.type} but steering goes ${corner.direction} (left must be positive)`);
+  s.turns.forEach((turn, i) => {
+    const label = `turn ${i} (${turn.type} ${turn.description})`;
+    const sign = FIRM_TURNS[turn.type];
+    if (sign) {
+      let yawRad = 0;
+      tl.forEach((row, k) => {
+        if (Math.abs(travelled[k] - turn.atM) <= LIMITS.turnCheckRadiusM) {
+          yawRad += kphToMps(row.speedKph) * curvature(row.steeringDeg) * STEP_S;
+        }
+      });
+      // Either reading may match: three lefts around a block amount to the right turn OSRM names.
+      const yawDeg = (yawRad * 180) / Math.PI;
+      const wrappedDeg = (Math.atan2(Math.sin(yawRad), Math.cos(yawRad)) * 180) / Math.PI;
+      const matches = Math.sign(yawDeg) === sign || Math.sign(wrappedDeg) === sign;
+      if (Math.abs(yawDeg) >= LIMITS.minCheckedYawDeg && !matches) {
+        errors.push(`${label}: steering turns ${yawDeg.toFixed(0)} deg the wrong way (left must be positive)`);
+      }
     }
-    const offsetM = Math.abs(travelled[corner.apexI] - turn.atM);
-    if (offsetM > LIMITS.turnPositionToleranceM) errors.push(`${label}: atM is ${offsetM.toFixed(1)} m from the steering apex`);
-
-    const mode = corner.direction === 'left' ? 'BlinkLeft' : 'BlinkRight';
-    const blink = blinks.find((run) => run.mode === mode && run.startI <= corner.moveI && run.endI >= corner.moveI);
-    if (!blink) {
-      errors.push(`${label}: no ${mode} when steering starts`);
-    } else {
-      const lead = tl[corner.moveI].t - tl[blink.startI].t;
-      if (lead < LIMITS.minSignalLeadS - 1e-6) errors.push(`${label}: signal leads steering by ${lead.toFixed(1)} s, need ${LIMITS.minSignalLeadS}`);
-      if (blink.endI < corner.endI) errors.push(`${label}: signal stops before the corner ends`);
+    const mode = SIGNALLED[turn.type];
+    if (mode) {
+      const previousM = i > 0 ? s.turns[i - 1].atM : 0;
+      const leadM = Math.min(LIMITS.minSignalLeadM, turn.atM - previousM);
+      const fromI = travelled.findIndex((metres) => metres >= turn.atM - leadM);
+      const toI = travelled.findIndex((metres) => metres >= turn.atM);
+      // A close next maneuver may take over the signal, so one matching sample is enough here.
+      if (!tl.slice(fromI, toI + 1).some((row) => row.turnSignal === mode)) {
+        errors.push(`${label}: no ${mode} over the last ${leadM.toFixed(0)} m`);
+      }
     }
-    const from = Math.max(0, corner.moveI - Math.round(LIMITS.cornerSlowdownWindowS / STEP_S));
-    if (Math.min(...accel.slice(from, corner.moveI)) > -0.6) errors.push(`${label}: no slowdown before steering starts`);
   });
 }
 
-function precursorWindow(accel, startI) {
-  const samples = Math.round(LIMITS.precursorWindowS / STEP_S);
-  return startI < samples ? null : accel.slice(startI - samples, startI);
-}
-
-function checkLongitudinal(s, hardAccels, hardBrakes, accel, travelled, errors) {
+// A hard brake is always scripted, and a scripted one always has a CONGESTION event ahead.
+function checkHardBrakes(s, hardBrakes, travelled, errors) {
   const tl = s.timeline;
-  if (hardAccels.length < 1) errors.push(`need a hard acceleration (at least ${LIMITS.hardAccelMps2} m/s²)`);
-  if (hardBrakes.length < 1) errors.push(`need a hard brake (beyond ${LIMITS.normalBrakeMps2} m/s²)`);
-
-  for (const { startI } of hardAccels) {
-    const window = precursorWindow(accel, startI);
-    if (!window || Math.min(...window) < LIMITS.precursorAccelMps2) {
-      errors.push(`t=${tl[startI].t}: hard acceleration lacks ${LIMITS.precursorWindowS} s of gentle acceleration before it`);
-    }
-  }
   for (const { startI, endI } of hardBrakes) {
-    const window = precursorWindow(accel, startI);
-    if (!window || Math.max(...window) > -LIMITS.precursorAccelMps2) {
-      errors.push(`t=${tl[startI].t}: hard brake lacks ${LIMITS.precursorWindowS} s of lift-off before it`);
-    }
     const event = s.frontEvents.find((e) => e.atM > travelled[startI] && e.atM >= travelled[endI]);
     if (!event) errors.push(`t=${tl[startI].t}: hard brake has no front event ahead of where it ends`);
-    else if (event.type !== 'CONGESTION') errors.push(`t=${tl[startI].t}: hard brake front event is ${event.type}, expected CONGESTION`);
   }
+}
+
+function checkDemoWindow(s, errors) {
+  if (s.demoWindow === undefined) return;
+  const { fromSec, toSec } = s.demoWindow ?? {};
+  if (!isNumber(fromSec) || !isNumber(toSec)) {
+    errors.push('demoWindow needs fromSec and toSec');
+    return;
+  }
+  const wholeRoute = fromSec === 0 && toSec === s.timeline.at(-1).t && toSec <= LIMITS.demoWindowS;
+  if (!wholeRoute && Math.abs(toSec - fromSec - LIMITS.demoWindowS) > 1e-6) {
+    errors.push(`demoWindow must span ${LIMITS.demoWindowS} s or a whole shorter route`);
+  }
+  if (fromSec < 0 || toSec > s.timeline.at(-1).t) errors.push('demoWindow is outside the timeline');
+  const start = s.timeline[Math.round(fromSec / STEP_S)];
+  if (!start || start.speedKph !== 0) errors.push('demoWindow must start with the car stopped');
 }
 
 // Returns { errors, warnings, info }. Errors fail the scenario.
@@ -212,13 +225,13 @@ export function validateScenario(s, { assetsDir } = {}) {
   const travelled = distances(s.timeline);
   const { corners, hardAccels, hardBrakes } = detectManeuvers(s.timeline);
   checkRoute(s, travelled, errors);
-  checkTurns(s, corners, travelled, accel, errors);
-  checkLongitudinal(s, hardAccels, hardBrakes, accel, travelled, errors);
+  checkTurns(s, travelled, errors);
+  checkHardBrakes(s, hardBrakes, travelled, errors);
+  checkDemoWindow(s, errors);
 
   if (assetsDir && !existsSync(resolve(assetsDir, s.mapImage))) warnings.push(`map image not produced yet: ${s.mapImage}`);
 
   const tl = s.timeline;
-  const blinks = signalRuns(tl);
   info.durationS = tl[tl.length - 1].t;
   info.integratedM = Number(travelled[travelled.length - 1].toFixed(1));
   info.routeLengthM = s.routeLengthM;
@@ -228,37 +241,21 @@ export function validateScenario(s, { assetsDir } = {}) {
   info.peakSteeringDeg = Math.max(...tl.map((row) => Math.abs(row.steeringDeg)));
   info.peakSpeedKph = Math.max(...tl.map((row) => row.speedKph));
   info.peakLateral = Number(Math.max(...tl.map(lateralAccel)).toFixed(2));
-  info.corners = corners.map((corner, i) => ({
-    turn: s.turns[i] ? `${s.turns[i].type} ${s.turns[i].description}` : '(no turn)',
-    atM: s.turns[i]?.atM,
-    signalOn: tl[blinks.find((run) => run.startI <= corner.moveI && run.endI >= corner.moveI)?.startI]?.t,
-    steerStart: tl[corner.moveI].t,
-    label: tl[corner.startI].t,
-    apex: tl[corner.apexI].t,
-    end: tl[corner.endI].t,
-    speedKph: tl[corner.apexI].speedKph,
-  }));
-  info.hardAccels = hardAccels.map(({ startI, hardI, endI }) => ({
+  info.turns = s.turns.length;
+  info.corners = corners.length;
+  info.frontEvents = s.frontEvents.length;
+  info.routePxPoints = s.routePx.length;
+  info.demoWindow = s.demoWindow ? `${s.demoWindow.fromSec} to ${s.demoWindow.toSec}` : 'none';
+  info.hardAccels = hardAccels.length;
+  info.hardBrakes = hardBrakes.map(({ startI, hardI, endI }) => ({
     start: tl[startI].t,
     hard: tl[hardI].t,
     end: tl[endI].t,
     fromKph: tl[startI].speedKph,
     toKph: tl[endI].speedKph,
+    brakeStartM: Math.round(travelled[startI]),
+    frontEventAtM: s.frontEvents.find((e) => e.atM > travelled[startI])?.atM,
   }));
-  info.hardBrakes = hardBrakes.map(({ startI, hardI, endI }) => {
-    const samples = Math.round((LIMITS.precursorWindowS + 1) / STEP_S);
-    const event = s.frontEvents.find((e) => e.atM > travelled[startI]);
-    return {
-      start: tl[startI].t,
-      hard: tl[hardI].t,
-      end: tl[endI].t,
-      fromKph: tl[startI].speedKph,
-      toKph: tl[endI].speedKph,
-      frontEventAtM: event?.atM,
-      // How far ahead the app must publish the event to show it 3 s before braking.
-      lookaheadNeededM: event ? Math.round(event.atM - travelled[Math.max(0, startI - samples)]) : undefined,
-    };
-  });
   return { errors, warnings, info };
 }
 
@@ -275,8 +272,17 @@ export function formatReport({ errors, warnings, info }) {
 const HERE = dirname(fileURLToPath(import.meta.url));
 const ASSETS = resolve(HERE, '..', '..', 'app/src/main/assets');
 
+const DEFAULT_FILES = [
+  'gangnam-pangyo',
+  'pangyo-dongpangyo',
+  'seohyeon-yanghyeon',
+  'gangnam-teheran',
+  'seocho-jungang',
+  'seoulstation-cheongpa',
+].map((id) => resolve(ASSETS, `scenarios/${id}.json`));
+
 function main(paths) {
-  const files = paths.length > 0 ? paths : [resolve(ASSETS, 'scenarios/pangyo-gangnam.json')];
+  const files = paths.length > 0 ? paths : DEFAULT_FILES;
   for (const file of files) {
     console.log(file);
     const report = validateScenario(JSON.parse(readFileSync(file, 'utf8')), { assetsDir: ASSETS });

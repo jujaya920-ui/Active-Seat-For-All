@@ -45,7 +45,8 @@ class ScenarioPlayer(
 
     private var failedWrites = 0
 
-    suspend fun play(scenario: Scenario) {
+    /** Plays `fromSec` to `toSec` of the timeline, by default all of it. */
+    suspend fun play(scenario: Scenario, fromSec: Double = 0.0, toSec: Double = scenario.durationSec) {
         failedWrites = 0
         coroutineScope {
             val heartbeat = launch {
@@ -58,7 +59,7 @@ class ScenarioPlayer(
                 _state.value = PlayerState.Warmup
                 delay(BRIDGE_WARMUP_MS)
                 write { console.gear("Drive") }
-                playTimeline(scenario)
+                playTimeline(scenario, fromSec, toSec)
             } finally {
                 withContext(NonCancellable) {
                     write { console.controls(ConsoleControls(0, 0, 0, 0)) }
@@ -72,13 +73,13 @@ class ScenarioPlayer(
         }
     }
 
-    private suspend fun playTimeline(scenario: Scenario) {
-        val frameCount = ceil(scenario.durationSec * 1000 / FRAME_INTERVAL_MS).toInt() + 1
+    private suspend fun playTimeline(scenario: Scenario, fromSec: Double, toSec: Double) {
+        val frameCount = ceil((toSec - fromSec) * 1000 / FRAME_INTERVAL_MS).toInt() + 1
         val start = clockMs()
         var lastTurn: String? = null
         var index = 0
         while (index < frameCount && currentCoroutineContext().isActive) {
-            val tSec = index * FRAME_INTERVAL_MS / 1000.0
+            val tSec = fromSec + index * FRAME_INTERVAL_MS / 1000.0
             val frame = scenario.frameAt(tSec)
             val controls = frame.toConsoleControls()
             log("PLAY t=$tSec $controls turn=${frame.turnSignal}")
@@ -87,7 +88,7 @@ class ScenarioPlayer(
                 write { console.turnSignal(frame.turnSignal) }
                 lastTurn = frame.turnSignal
             }
-            _state.value = PlayerState.Playing(tSec, scenario.durationSec)
+            _state.value = PlayerState.Playing(tSec, toSec)
 
             // Stay on the time grid: skip frames rather than stretch the scenario when late.
             index = max(index + 1, ((clockMs() - start) / FRAME_INTERVAL_MS).toInt() + 1)

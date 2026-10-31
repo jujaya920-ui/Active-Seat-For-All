@@ -164,7 +164,7 @@ describe('jev request', () => {
     await post(input);
 
     const { state } = JSON.parse(fake.mock.calls[0].arguments[1].body);
-    assert.deepEqual(Object.keys(state).sort(), ['frontEvent', 'motion', 'nextTurn', 'notes', 'signals']);
+    assert.deepEqual(Object.keys(state).sort(), ['frontEvent', 'motion', 'nextTurn', 'notes', 'projections', 'signals', 'wheelNow']);
     assert.deepEqual(Object.keys(state.signals[0]).sort(), [
       'ageMs',
       'brake',
@@ -188,6 +188,36 @@ describe('jev request', () => {
     assert.deepEqual(state.frontEvent, { type: 'CONGESTION', distanceM: 200, etaSec: 25 });
   });
 
+  it('projects each horizon by arithmetic only', async () => {
+    const fake = mockGateway(replyWith(jevResponse()));
+    const input = validInput();
+    input.signals = [800, 600, 400, 200, 0].map((age, i) => signal(age, { speedKph: 36 - i * 1.8, steeringDeg: i * -10 }));
+    input.frontEvent = null;
+    input.horizonsSec = [2, 20];
+    await post(input);
+
+    const { state } = JSON.parse(fake.mock.calls[0].arguments[1].body);
+    assert.equal(state.wheelNow, '40 degrees right');
+    assert.deepEqual(state.projections[0], {
+      horizonSec: 2,
+      speedKph: 10.8, // 28.8 km/h falling 2.5 m/s² for 2 s.
+      wheel: '140 degrees right', // -40 degrees turning at -50 per second.
+      nextTurnEtaAfterSec: 8,
+      frontEventEtaAfterSec: null,
+      stopDecelAfterMps2: 0.5, // 8 m/s over the 64 m left after 2 s.
+    });
+    assert.equal(state.projections[1].speedKph, 0);
+    assert.equal(state.projections[1].stopDecelAfterMps2, null);
+  });
+
+  it('calls a centred wheel centred', async () => {
+    const fake = mockGateway(replyWith(jevResponse()));
+    const input = validInput();
+    input.signals = [800, 600, 400, 200, 0].map((age) => signal(age, { steeringDeg: 0 }));
+    await post(input);
+    assert.equal(JSON.parse(fake.mock.calls[0].arguments[1].body).state.wheelNow, 'centred');
+  });
+
   it('sends no eta when stopped', async () => {
     const fake = mockGateway(replyWith(jevResponse()));
     const input = validInput();
@@ -198,13 +228,15 @@ describe('jev request', () => {
     assert.equal(state.nextTurn.etaSec, null);
   });
 
-  it('ties each horizon to its own eta limit', async () => {
+  it('states each horizon in the question and keeps timing rules out of the criteria', async () => {
     const fake = mockGateway(replyWith(jevResponse()));
     await post(validInput());
 
     const { questions } = JSON.parse(fake.mock.calls[0].arguments[1].body);
-    assert.match(questions.lateral_0.criteria.left, /at most 3\.9/);
-    assert.match(questions.lateral_1.criteria.left, /at most 4\.3/);
+    assert.match(questions.lateral_0.instructions, /exactly 1\.6 seconds/);
+    // The only numbers allowed are the horizon, the state index and the label definitions.
+    const numbers = JSON.stringify(questions).match(/\d+(\.\d+)?/g);
+    assert.deepEqual([...new Set(numbers)].sort(), ['0', '0.6', '1', '1.6', '15', '2']);
     assert.deepEqual(Object.keys(questions.lateral_0.criteria), ['left', 'right', 'straight']);
     assert.deepEqual(Object.keys(questions.longitudinal_0.criteria), ['accelerate', 'brake', 'steady']);
   });

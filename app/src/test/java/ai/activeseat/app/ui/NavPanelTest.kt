@@ -5,12 +5,12 @@ import org.junit.Test
 
 class NavPanelTest {
     @Test
-    fun portraitCanvasFitsWidthAndCentresVertically() {
+    fun portraitCanvasFitsWidthAndAlignsToTheTop() {
         val fit = fitMap(840f, 1100f)
 
-        assertEquals(0.525f, fit.scale, 1e-5f)
+        assertEquals(0.84f, fit.scale, 1e-5f)
         assertEquals(0f, fit.offsetX, 1e-3f)
-        assertEquals(287.5f, fit.offsetY, 1e-3f)
+        assertEquals(0f, fit.offsetY, 1e-3f)
     }
 
     @Test
@@ -18,7 +18,7 @@ class NavPanelTest {
         val fit = fitMap(2000f, 500f)
 
         assertEquals(0.5f, fit.scale, 1e-5f)
-        assertEquals(600f, fit.offsetX, 1e-3f)
+        assertEquals(750f, fit.offsetX, 1e-3f)
         assertEquals(0f, fit.offsetY, 1e-3f)
     }
 

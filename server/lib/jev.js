@@ -13,47 +13,51 @@ const LONGITUDINAL_NEUTRAL = 'steady';
 const LATERAL_CLASSES = ['left', 'right', LATERAL_NEUTRAL];
 const LONGITUDINAL_CLASSES = ['accelerate', 'brake', LONGITUDINAL_NEUTRAL];
 
-// Seconds before a road feature at which drivers start each motion. Only the question wording
-// uses these, to tie a motion to etaSec. Jev still gives the answer.
-const TURN_IN_ETA_S = 2.3;
-const SLOW_FOR_TURN_ETA_S = 7;
-const ACCEL_FOR_ROAD_ETA_S = 1;
-const BRAKE_FOR_CONGESTION_ETA_S = 3;
-const BRAKE_FOR_DESTINATION_ETA_S = 5;
-
 const round = (value, digits) => Number(value.toFixed(digits));
 
-function lateralQuestion(h) {
-  const turnEta = round(h + TURN_IN_ETA_S, 1);
-  const side = (name) =>
-    `the wheel is past 15 degrees ${name} at that moment: \`nextTurn\` turns ${name} and its \`etaSec\` is at most ${turnEta}, or the wheel is already ${name} and not returning to centre`;
+// Spelled out because Jev confused a negative steeringDeg with the name of the next turn.
+const describeWheel = (deg) => {
+  const size = Math.abs(Math.round(deg));
+  return size === 0 ? 'centred' : `${size} degrees ${deg > 0 ? 'left' : 'right'}`;
+};
+
+// Criteria only define each class. The instructions hold driving knowledge in words, with no timing
+// numbers: when a manoeuvre starts is Jev's judgement from state, on any road.
+function lateralQuestion(h, i) {
   return {
     type: 'choice',
-    instructions: `Where is the steering wheel exactly ${h} seconds from now? Use \`nextTurn.etaSec\`, \`motion.steeringRateDegS\` and the newest \`steeringDeg\`.`,
+    instructions: `Where will the steering wheel be exactly ${h} seconds from now? Judge it from \`projections[${i}]\`, the signals and \`nextTurn\`. A driver keeps the wheel centred until the car is actually at a turn, even if the turn is announced and the turn signal is on, then steers the way the turn goes. The road can also curve with no announced turn, so a wheel already off centre follows the road, and \`nextTurn\` says nothing about it unless the car is at that turn. Read the side from \`wheelNow\`, not from the name of the next turn. Once a turn is under way the wheel returns to centre. If a stopped car is close to a turn, it steers as it pulls away.`,
     criteria: {
-      left: side('left'),
-      right: side('right'),
-      [LATERAL_NEUTRAL]: `the wheel is within 15 degrees of centre at that moment: \`nextTurn\` is more than ${turnEta} seconds away even if the turn signal is on, or the wheel is returning to centre after a turn, including when it is passing through zero`,
+      left: 'the wheel is more than 15 degrees left of centre at that moment',
+      right: 'the wheel is more than 15 degrees right of centre at that moment',
+      [LATERAL_NEUTRAL]: 'the wheel is within 15 degrees of centre at that moment',
     },
   };
 }
 
-function longitudinalQuestion(h) {
+function longitudinalQuestion(h, i) {
   return {
     type: 'choice',
-    instructions: `What is the car doing to its speed exactly ${h} seconds from now? Use \`frontEvent.etaSec\`, \`nextTurn.etaSec\`, \`motion.accelMps2\` and \`brake\`.`,
+    instructions: `How will the speed be changing exactly ${h} seconds from now? Judge it from \`projections[${i}]\`, \`motion\`, the signals, \`nextTurn\` and \`frontEvent\`. The current signals only show what the driver is doing now, and braking for something ahead always starts while the speed still looks steady, so steady signals are no evidence that the car will still be steady then. A driver does not wait until only hard braking would be enough: judge whether the driver would already be slowing by then from \`stopDecelAfterMps2\`, the deceleration that would be needed at the horizon if the car had not slowed by then. A car at road speed cannot take a turn or enter congestion without first shedding much of that speed, so on an approach at speed the next thing the driver does is brake, and the only question is whether that has begun by then. Choose the most likely class even when the driver has not begun yet. A car leaving a turn or a stop speeds up, and as the wheel returns to centre the driver goes back on the accelerator. Far from any turn or event, a driver holds speed.`,
     criteria: {
-      accelerate: `speed is rising by more than 0.6 m/s² at that moment: \`frontEvent\` is HIGHWAY_MERGE or CONGESTION_END, where drivers accelerate on reaching it, with \`etaSec\` at most ${round(h + ACCEL_FOR_ROAD_ETA_S, 1)}, or \`motion.accelMps2\` is already above 0.6, or the wheel is returning to centre after a turn, since drivers accelerate out of a turn`,
-      brake: `speed is falling by more than 0.6 m/s² at that moment: \`frontEvent\` is CONGESTION with \`etaSec\` at most ${round(h + BRAKE_FOR_CONGESTION_ETA_S, 1)} while speed is above 35 km/h, or DESTINATION with \`etaSec\` at most ${round(h + BRAKE_FOR_DESTINATION_ETA_S, 1)}, or \`nextTurn.etaSec\` is at most ${round(h + SLOW_FOR_TURN_ETA_S, 1)} while speed is above 35 km/h, or \`motion.accelMps2\` is already below -0.6`,
-      [LONGITUDINAL_NEUTRAL]: 'speed changes by less than 0.6 m/s² at that moment: none of the cases above applies, for example cruising, crawling, or holding turn speed while the wheel moves away from centre',
+      accelerate: 'speed is rising by more than 0.6 m/s² at that moment',
+      brake: 'speed is falling by more than 0.6 m/s² at that moment',
+      [LONGITUDINAL_NEUTRAL]: 'speed is changing by less than 0.6 m/s² at that moment',
     },
   };
 }
 
 const STATE_NOTES =
   'signals are oldest first. ageMs is how long ago the sample was taken. steeringDeg is positive to the left. ' +
-  'motion is computed from signals: accelMps2 is the speed change per second, steeringRateDegS the steering change per second. ' +
-  'etaSec is distanceM divided by the current speed, null when stopped. nextTurn and frontEvent are null when absent.';
+  'wheelNow says where the wheel points now. motion is computed from signals: accelMps2 is the speed change per second, ' +
+  'steeringRateDegS the steering change per second. ' +
+  'etaSec is distanceM divided by the current speed, null when stopped. ' +
+  'nextTurn and frontEvent are null when absent. ' +
+  'projections has one entry per horizon: what simple arithmetic gives if speed and steering keep changing at the ' +
+  'current rate. It is not a prediction: a driver changes what they do. nextTurnEtaAfterSec and ' +
+  'frontEventEtaAfterSec are etaSec minus the horizon, negative when the car gets there before the horizon. ' +
+  'stopDecelAfterMps2 is the constant deceleration that would stop the car at the nearest of nextTurn and ' +
+  'frontEvent, starting at the horizon at the current speed, null when there is neither or the car would be past it.';
 
 export class UpstreamError extends Error {
   constructor(code, message) {
@@ -130,10 +134,35 @@ function deriveMotion(signals) {
   };
 }
 
+const etaAfter = (item, h) => (item?.etaSec == null ? null : round(item.etaSec - h, 1));
+
+// Stopping deceleration from the horizon on, if the car holds its current speed until then.
+function stopDecelAfter(mps, h, nextTurn, frontEvent) {
+  const distances = [nextTurn, frontEvent].filter(Boolean).map((item) => item.distanceM);
+  if (mps === 0 || distances.length === 0) return null;
+  const left = Math.min(...distances) - mps * h;
+  return left > 0 ? round((mps * mps) / (2 * left), 2) : null;
+}
+
+// Straight-line arithmetic per horizon. Nothing here is a judgement about what the driver will do.
+function deriveProjections(horizonsSec, last, motion, nextTurn, frontEvent) {
+  return horizonsSec.map((horizonSec) => ({
+    horizonSec,
+    speedKph: round(Math.max(0, last.speedKph + motion.accelMps2 * 3.6 * horizonSec), 1),
+    wheel: describeWheel(last.steeringDeg + motion.steeringRateDegS * horizonSec),
+    nextTurnEtaAfterSec: etaAfter(nextTurn, horizonSec),
+    frontEventEtaAfterSec: etaAfter(frontEvent, horizonSec),
+    stopDecelAfterMps2: stopDecelAfter(last.speedKph / 3.6, horizonSec, nextTurn, frontEvent),
+  }));
+}
+
 // Copies contract fields one by one, so anything else in the body never reaches Jev.
 // Derived values come from the same contract fields, so the app's request does not change.
-export function buildState({ signals, nextTurn, frontEvent }) {
-  const { speedKph } = signals[signals.length - 1];
+export function buildState({ signals, nextTurn, frontEvent, horizonsSec }) {
+  const last = signals[signals.length - 1];
+  const motion = deriveMotion(signals);
+  const turn = pickRouteItem(nextTurn, last.speedKph);
+  const front = pickRouteItem(frontEvent, last.speedKph);
   return {
     notes: STATE_NOTES,
     signals: signals.map(({ ageMs, speedKph, steeringDeg, brake, turnSignal }) => ({
@@ -143,9 +172,11 @@ export function buildState({ signals, nextTurn, frontEvent }) {
       brake,
       turnSignal,
     })),
-    motion: deriveMotion(signals),
-    nextTurn: pickRouteItem(nextTurn, speedKph),
-    frontEvent: pickRouteItem(frontEvent, speedKph),
+    wheelNow: describeWheel(last.steeringDeg),
+    motion,
+    projections: deriveProjections(horizonsSec, last, motion, turn, front),
+    nextTurn: turn,
+    frontEvent: front,
   };
 }
 
@@ -155,8 +186,8 @@ export function buildJevRequest(input) {
   const questions = {};
 
   horizonsSec.forEach((h, i) => {
-    questions[`lateral_${i}`] = lateralQuestion(h);
-    questions[`longitudinal_${i}`] = longitudinalQuestion(h);
+    questions[`lateral_${i}`] = lateralQuestion(h, i);
+    questions[`longitudinal_${i}`] = longitudinalQuestion(h, i);
   });
 
   return { model: JEV_MODEL, state: buildState(input), questions };

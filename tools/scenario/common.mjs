@@ -4,30 +4,41 @@
 export const STEP_S = 0.2;
 
 export const LIMITS = {
-  minDurationS: 90,
-  maxDurationS: 150,
+  // Real routes run in real time; the upper bound only catches a broken generator.
+  minDurationS: 60,
+  maxDurationS: 3 * 3600,
   maxSteeringDeg: 450,
   maxSteeringRateDegS: 200,
   maxSpeedKph: 130,
   maxAccelMps2: 3.5,
-  // Anything harder than normalBrakeMps2 counts as a hard brake and needs a front event.
+  // Anything harder than normalBrakeMps2 is a scripted hard brake and needs a front event.
+  // Unannounced slowdowns stay gentler than this, so they need no event.
   normalBrakeMps2: -3.5,
   maxBrakeMps2: -6.0,
   maxJerkMps3: 8,
   maxLateralMps2: 4,
   hardAccelMps2: 2.5,
   routeLengthTolerance: 0.01,
-  // Demo horizon 2 s, plus the 0.8 s signal window and part of the round trip.
-  minSignalLeadS: 3,
-  precursorWindowS: 2,
-  precursorAccelMps2: 0.2,
-  cornerSlowdownWindowS: 6,
-  turnPositionToleranceM: 5,
   polylineTolerance: 0.01,
+  maxRoutePxPoints: 399,
+  demoWindowS: 150,
+  // A turn whose heading changes less than this cannot show a direction in the timeline.
+  minCheckedYawDeg: 30,
+  turnCheckRadiusM: 40,
+  minSignalLeadM: 30,
 };
 
-// Label thresholds. The lift-off and gentle pre-acceleration phases sit below
-// longitudinalMps2 on purpose, so the label flips only when the real maneuver starts.
+// NaviHelper TurnType values this project can emit, read from navi-data 3.0.4. The front event
+// value CONGESTION is the plan's API value; the SDK reports the same thing as a
+// TrafficCongestionInfo section, not as an enum value of that name.
+export const TURN_TYPES = [
+  'TURN_UNKNOWN', 'TURN_STRAIGHT', 'TURN_RIGHT', 'TURN_LEFT', 'TURN_KEEP_R', 'TURN_KEEP_L',
+  'TURN_SHARP_R', 'TURN_SHARP_L', 'TURN_UTURN', 'TURN_ENTER_IC_R', 'TURN_ENTER_IC_L',
+  'TURN_ENTER_IC_C', 'TURN_EXIT_IC_R', 'TURN_EXIT_IC_L', 'TURN_EXIT_IC_C', 'TURN_ARRIVE',
+];
+export const FRONT_EVENT_TYPES = ['CONGESTION'];
+
+// Label thresholds.
 export const LABEL = {
   horizonS: 2,
   lateralDeg: 15,

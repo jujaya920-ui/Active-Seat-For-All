@@ -70,7 +70,11 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
     private val stabilizer = HintStabilizer(HintConfig(), clock, RttTracker())
     private var playJob: Job? = null
 
+    @Volatile
     private var loaded: Map<String, Scenario> = emptyMap()
+
+    // Scenarios load in the background, so a start asked for early waits for them.
+    private var pendingStart: Pair<String, Boolean>? = null
     private var lastHint = Hint()
 
     // A test value shown instead of the real hint, for checking the modules without driving.
@@ -91,14 +95,7 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
     val playerState: StateFlow<PlayerState> = player.state
 
     init {
-        val ids = runCatching { scenarios.ids() }.getOrDefault(emptyList())
-        loaded = ids.mapNotNull { id ->
-            runCatching { id to scenarios.load(id) }
-                .onFailure { Log.e(TAG, "scenario $id failed", it) }
-                .getOrNull()
-        }.toMap()
-        _ui.update { state -> state.copy(destinations = loaded.values.map { Destination(it.id, it.title) }) }
-        loaded.keys.firstOrNull()?.let(::select)
+        viewModelScope.launch(Dispatchers.IO) { loadScenarios() }
 
         source.start()
         refreshSpeed()
@@ -136,13 +133,27 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
         }
     }
 
-    fun start() {
+    /** Plays the scenario's demo window, or the whole route when `fullRoute` or it has none. */
+    fun start(fullRoute: Boolean = false) {
         if (playJob?.isActive == true) return
         val id = _ui.value.selectedScenario ?: return
         val scenario = loaded[id] ?: return
-        navigator?.reset()
+        val window = scenario.demoWindow.takeUnless { fullRoute }
+        navigator?.reset(window?.let { scenario.distanceAtM(it.fromSec) } ?: 0.0)
         _ui.update { it.copy(playerError = null) }
-        playJob = viewModelScope.launch(Dispatchers.Default) { player.play(scenario) }
+        playJob = viewModelScope.launch(Dispatchers.Default) {
+            if (window == null) player.play(scenario) else player.play(scenario, window.fromSec, window.toSec)
+        }
+    }
+
+    /** For a test run asking before the scenarios finished loading. */
+    fun startWhenLoaded(id: String, fullRoute: Boolean) {
+        if (loaded.isEmpty()) {
+            pendingStart = id to fullRoute
+            return
+        }
+        select(id)
+        start(fullRoute)
     }
 
     fun stop() {
@@ -164,6 +175,20 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
     override fun onCleared() {
         source.stop()
     }
+
+    private fun loadScenarios() {
+        loaded = scenarios.ids().mapNotNull { id ->
+            runCatching { id to scenarios.load(id) }
+                .onFailure { Log.e(TAG, "scenario $id failed", it) }
+                .getOrNull()
+        }.toMap()
+        _ui.update { state -> state.copy(destinations = demoRoutes().map { Destination(it.id, it.title) }) }
+        demoRoutes().firstOrNull()?.let { select(it.id) }
+        pendingStart?.let { (id, fullRoute) -> startWhenLoaded(id, fullRoute) }
+    }
+
+    // Test scenarios have no demo window and stay reachable only through the intent.
+    private fun demoRoutes() = loaded.values.filter { it.demoWindow != null }
 
     private fun shouldPredict(): Boolean {
         val state = player.state.value

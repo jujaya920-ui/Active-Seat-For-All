@@ -1,6 +1,7 @@
 package ai.activeseat.app.ui
 
 import ai.activeseat.app.demo.PlayerState
+import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
@@ -8,6 +9,7 @@ import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.rememberScrollState
 import androidx.compose.material3.Button
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
@@ -27,6 +29,7 @@ fun AppScreen(
     player: PlayerState,
     onSelect: (String) -> Unit,
     onStart: () -> Unit,
+    onStartFull: () -> Unit,
     onStop: () -> Unit,
     onRequestSpeedPermission: () -> Unit,
 ) {
@@ -36,7 +39,7 @@ fun AppScreen(
                 NavPanel(ui.route, ui.nav, ui.map, Modifier.weight(1f).fillMaxHeight())
                 Column(modifier = Modifier.weight(1f).fillMaxHeight()) {
                     HardwarePanel(ui.hardware, Modifier.weight(1f).fillMaxWidth())
-                    ControlBar(ui, player, onSelect, onStart, onStop, onRequestSpeedPermission)
+                    ControlBar(ui, player, onSelect, onStart, onStartFull, onStop, onRequestSpeedPermission)
                 }
             }
         }
@@ -49,6 +52,7 @@ private fun ControlBar(
     player: PlayerState,
     onSelect: (String) -> Unit,
     onStart: () -> Unit,
+    onStartFull: () -> Unit,
     onStop: () -> Unit,
     onRequestSpeedPermission: () -> Unit,
 ) {
@@ -58,6 +62,7 @@ private fun ControlBar(
         verticalArrangement = Arrangement.spacedBy(8.dp),
     ) {
         Row(
+            modifier = Modifier.horizontalScroll(rememberScrollState()),
             horizontalArrangement = Arrangement.spacedBy(8.dp),
             verticalAlignment = Alignment.CenterVertically,
         ) {
@@ -69,7 +74,13 @@ private fun ControlBar(
                     OutlinedButton(onClick = { onSelect(destination.id) }, enabled = !active) { Text(destination.title, style = MaterialTheme.typography.titleLarge) }
                 }
             }
-            Button(onClick = onStart, enabled = !active && ui.selectedScenario != null) { Text("출발", style = MaterialTheme.typography.titleLarge) }
+        }
+        Row(
+            horizontalArrangement = Arrangement.spacedBy(8.dp),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            Button(onClick = onStart, enabled = !active && ui.selectedScenario != null) { Text("시연 구간", style = MaterialTheme.typography.titleLarge) }
+            OutlinedButton(onClick = onStartFull, enabled = !active && ui.selectedScenario != null) { Text("전체", style = MaterialTheme.typography.titleLarge) }
             OutlinedButton(onClick = onStop, enabled = active) { Text("중지", style = MaterialTheme.typography.titleLarge) }
         }
         if (!ui.speedConnected) {

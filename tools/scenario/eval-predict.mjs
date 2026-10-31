@@ -2,7 +2,9 @@
 // Inputs hold only what the app would see: past signals plus navigation distances.
 // Usage: AI_GATEWAY_API_KEY=... node tools/scenario/eval-predict.mjs [--runs 1] [--offsets 0,0.6]
 //   [--ranges 16-28,78-88] [--horizons 2,2.4] [--front 300] [--parallel 4] [--save file.json]
-//   [--scenario file.json] [--rtt 0.5]
+//   [--scenario gangnam-pangyo|file.json] [--window] [--stride 1] [--rtt 0.5]
+// --window scores only the scenario's demoWindow. --stride is seconds between calls. Scoring a
+// whole real route makes one call per stride per pass, so a full run costs far more than a window.
 // Re-score saved calls without spending: node tools/scenario/eval-predict.mjs --replay file.json [--on 0.6] [--off 0.45] [--hold 1]
 import { readFileSync, writeFileSync } from 'node:fs';
 import { buildJevRequest, callJev, mapJevResponse, validateInput } from '../../server/lib/jev.js';
@@ -19,19 +21,25 @@ const list = (name, fallback) => text(name, fallback).split(',').map(Number);
 
 const RUNS = num('runs', 1);
 const OFFSETS = list('offsets', '0,0.6');
-const RANGES = text('ranges', '0-999').split(',').map((r) => r.split('-').map(Number));
+const RANGES = text('ranges', '0-999999').split(',').map((r) => r.split('-').map(Number));
 const FRONT_RANGE_M = num('front', 300);
 const PARALLEL = num('parallel', 4);
 const SIGNAL = { Off: 'off', BlinkLeft: 'left', BlinkRight: 'right' };
 const FIRST_I = 4;
 const hint = { ...HINT, onP: num('on', HINT.onP), offP: num('off', HINT.offP), minHoldS: num('hold', HINT.minHoldS), rttS: num('rtt', HINT.rttS) };
-const DEFAULT_SCENARIO = new URL('../../app/src/main/assets/scenarios/pangyo-gangnam.json', import.meta.url);
+const SCENARIOS = new URL('../../app/src/main/assets/scenarios/', import.meta.url);
+const STRIDE_S = num('stride', 1);
+const WINDOW_ONLY = process.argv.includes('--window');
 
-const scenario = JSON.parse(readFileSync(text('scenario') ?? DEFAULT_SCENARIO, 'utf8'));
+const named = text('scenario', 'gangnam-pangyo');
+const scenario = JSON.parse(readFileSync(/[\\/.]/.test(named) ? named : new URL(`${named}.json`, SCENARIOS), 'utf8'));
 const { timeline } = scenario;
+if (WINDOW_ONLY && !scenario.demoWindow) throw new Error('scenario has no demoWindow');
 const labels = deriveLabels(scenario, { horizonS: 2 });
-const maneuvers = listManeuvers(scenario);
-const endT = timeline.at(-1).t;
+const scope = WINDOW_ONLY ? [[scenario.demoWindow.fromSec, scenario.demoWindow.toSec]] : RANGES;
+const inScope = (t) => scope.some(([from, to]) => t >= from && t <= to);
+const maneuvers = listManeuvers(scenario).filter((m) => !WINDOW_ONLY || inScope(m.fromT));
+const endT = WINDOW_ONLY ? scenario.demoWindow.toSec : timeline.at(-1).t;
 
 const distance = [0];
 for (let i = 1; i < timeline.length; i++) distance[i] = distance[i - 1] + (timeline[i - 1].speedKph / 3.6) * STEP_S;
@@ -73,10 +81,10 @@ async function callAt(i, horizonsSec) {
 }
 
 async function runPass(offsetS, horizonsSec) {
-  const stride = Math.round(1 / STEP_S);
+  const stride = Math.max(1, Math.round(STRIDE_S / STEP_S));
   const indices = [];
   for (let i = FIRST_I + Math.round(offsetS / STEP_S); i < labels.length; i += stride) {
-    if (RANGES.some(([from, to]) => timeline[i].t >= from && timeline[i].t <= to)) indices.push(i);
+    if (inScope(timeline[i].t)) indices.push(i);
   }
   const out = [];
   for (let k = 0; k < indices.length; k += PARALLEL) {
@@ -119,8 +127,8 @@ function evaluate(passes) {
     const spans = { lat: hintSpans(pass.calls, 'lat', { hint, endT }), lon: hintSpans(pass.calls, 'lon', { hint, endT }) };
     for (const row of rows) row.scores.push(scoreManeuver(row.m, spans[row.m.axis]));
     for (const axis of ['lat', 'lon']) {
-      const inScope = maneuvers.filter((m) => m.axis === axis);
-      falses.push(...falseSpans(inScope, spans[axis]).map((s) => ({ ...s, pass: pass.label })));
+      const sameAxis = maneuvers.filter((m) => m.axis === axis);
+      falses.push(...falseSpans(sameAxis, spans[axis]).map((s) => ({ ...s, pass: pass.label })));
     }
   }
   return { rows, falses };

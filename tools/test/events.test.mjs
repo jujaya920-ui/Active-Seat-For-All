@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
-import { buildScenario, loadDefinition } from '../scenario/build.mjs';
+import { ROUTES, SHORT, generate } from '../scenario/from-route.mjs';
 import { HINT, falseSpans, hintSpans, listManeuvers, nearestPrediction, scoreManeuver, stabilize } from '../scenario/events.mjs';
 
 const on = (at, value, p) => ({ at, value, p });
@@ -71,7 +71,12 @@ test('false hint time excludes the window around a same-class maneuver', () => {
   assert.equal(falseSpans(maneuvers, [{ value: 'left', fromT: 16.5, toT: 26 }])[0].seconds, 2);
 });
 
-test('the scenario lists 3 corners and one hard acceleration and brake', async () => {
-  const hard = listManeuvers(buildScenario(await loadDefinition())).filter((m) => m.hard);
-  assert.deepEqual(hard.map((m) => m.value), ['right', 'right', 'accelerate', 'brake', 'left']);
+test('every real route lists its corners, and hard launches appear only on short routes', () => {
+  for (const entry of ROUTES) {
+    const scenario = generate(entry);
+    const maneuvers = listManeuvers(scenario);
+    const expected = scenario.routeLengthM <= SHORT.maxLengthM ? ['accelerate', 'brake'] : ['brake'];
+    assert.ok(maneuvers.some((m) => m.axis === 'lat'), entry.id);
+    assert.deepEqual([...new Set(maneuvers.filter((m) => m.axis === 'lon' && m.hard).map((m) => m.value))].sort(), expected, entry.id);
+  }
 });

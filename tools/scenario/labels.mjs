@@ -50,7 +50,7 @@ export function labelSpans(rows, key) {
 
 function main(argv) {
   const HERE = dirname(fileURLToPath(import.meta.url));
-  const fallback = resolve(HERE, '..', '..', 'app/src/main/assets/scenarios/pangyo-gangnam.json');
+  const fallback = resolve(HERE, '..', '..', 'app/src/main/assets/scenarios/gangnam-pangyo.json');
   const flag = argv.indexOf('--horizon');
   const horizonS = flag >= 0 ? Number(argv[flag + 1]) : LABEL.horizonS;
   const file = argv.find((arg, i) => !arg.startsWith('--') && (flag < 0 || i !== flag + 1)) ?? fallback;

@@ -42,8 +42,8 @@ class RouteNavigator(private val route: NavRoute) : NavContext {
     }
 
     @Synchronized
-    fun reset() {
-        progressM = 0.0
+    fun reset(startM: Double = 0.0) {
+        progressM = startM.coerceIn(0.0, route.lengthM)
         lastAtMs = null
         lastKph = 0.0
     }

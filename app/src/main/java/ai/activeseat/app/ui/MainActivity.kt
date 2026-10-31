@@ -13,6 +13,9 @@ import androidx.compose.runtime.getValue
 // Lets a test run start a scenario without touching the screen.
 private const val EXTRA_SCENARIO = "scenario"
 
+// With EXTRA_SCENARIO, plays the whole route instead of its demo window.
+private const val EXTRA_FULL_ROUTE = "fullRoute"
+
 // Shows a fixed hint on the modules: left, right, brake, accelerate, or off.
 private const val EXTRA_TEST_HINT = "testHint"
 
@@ -32,7 +35,8 @@ class MainActivity : ComponentActivity() {
                 ui = ui,
                 player = player,
                 onSelect = viewModel::select,
-                onStart = viewModel::start,
+                onStart = { viewModel.start() },
+                onStartFull = { viewModel.start(fullRoute = true) },
                 onStop = viewModel::stop,
                 onRequestSpeedPermission = { speedPermission.launch(SPEED_PERMISSION) },
             )
@@ -53,7 +57,6 @@ class MainActivity : ComponentActivity() {
     private fun handle(intent: Intent) {
         intent.getStringExtra(EXTRA_TEST_HINT)?.let(viewModel::showTestHint)
         val id = intent.getStringExtra(EXTRA_SCENARIO) ?: return
-        viewModel.select(id)
-        viewModel.start()
+        viewModel.startWhenLoaded(id, intent.getBooleanExtra(EXTRA_FULL_ROUTE, false))
     }
 }

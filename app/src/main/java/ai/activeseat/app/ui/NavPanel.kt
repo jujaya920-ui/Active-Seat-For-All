@@ -33,7 +33,8 @@ import androidx.compose.ui.unit.sp
 import kotlin.math.min
 import kotlin.math.roundToInt
 
-const val MAP_WIDTH_PX = 1600f
+private const val MAP_ATTRIBUTION = "© OpenStreetMap contributors · OpenFreeMap © OpenMapTiles"
+const val MAP_WIDTH_PX = 1000f
 const val MAP_HEIGHT_PX = 1000f
 private const val GRID_STEP_PX = 100
 
@@ -49,15 +50,21 @@ private val Label = Color(0xFFB0BEC5)
 /** How route coordinates land on a canvas: `canvas = offset + scale * route`. */
 data class MapFit(val scale: Float, val offsetX: Float, val offsetY: Float)
 
-/** Scales the route space to fit the canvas without distortion, centred. */
+/** Scales the route space to fit the canvas without distortion, top aligned so the card never covers the map. */
 fun fitMap(canvasWidth: Float, canvasHeight: Float): MapFit {
     val scale = min(canvasWidth / MAP_WIDTH_PX, canvasHeight / MAP_HEIGHT_PX)
-    return MapFit(scale, (canvasWidth - scale * MAP_WIDTH_PX) / 2, (canvasHeight - scale * MAP_HEIGHT_PX) / 2)
+    return MapFit(scale, (canvasWidth - scale * MAP_WIDTH_PX) / 2, 0f)
 }
 
 fun turnLabel(type: String): String = when (type) {
     "TURN_LEFT" -> "좌회전"
     "TURN_RIGHT" -> "우회전"
+    "TURN_KEEP_L" -> "왼쪽 방향"
+    "TURN_KEEP_R" -> "오른쪽 방향"
+    "TURN_STRAIGHT" -> "직진"
+    "TURN_ENTER_IC_C" -> "IC 진입"
+    "TURN_EXIT_IC_R" -> "IC 진출"
+    "TURN_ARRIVE" -> "도착"
     else -> type
 }
 
@@ -161,6 +168,7 @@ private fun GuidanceCard(route: NavRoute, state: NavState?, modifier: Modifier) 
                 NextTurn(state)
                 state.frontEvent?.let { Field("전방 이벤트", "${it.description} ${state.frontEventDistanceM}m", Amber) }
                 Field("남은 거리", "${state.remainingM.roundToInt()}m", Color.White)
+                Text(MAP_ATTRIBUTION, color = Color(0xFF90A4AE), fontSize = 14.sp)
             }
         }
     }
