@@ -65,12 +65,22 @@ class PredictionInputTest {
     @Test
     fun parsesContractResponse() {
         val body = """{ "predictions": [{ "horizonSec": 1.6,
-            "lateral": { "value": "left", "probability": 0.8, "confidence": 0.7 },
-            "longitudinal": { "value": "brake", "probability": 0.7, "confidence": 0.6 },
+            "lateral": { "value": "left", "probability": 0.8, "confidence": 0.7, "strength": 0.55,
+                "probabilities": { "left": 0.8, "right": 0.1, "straight": 0.1 } },
+            "longitudinal": { "value": "brake", "probability": 0.7, "confidence": 0.6, "strength": 0.4,
+                "probabilities": { "accelerate": 0.1, "brake": 0.7, "steady": 0.2 } },
             "hint": 0.8 }], "serverMs": 210 }"""
 
         val prediction = parsePredictResponse(body).single()
 
-        assertEquals(Prediction(1.6, "left", 0.8, "brake", 0.7, 0.8), prediction)
+        assertEquals(
+            Prediction(
+                1.6,
+                AxisPrediction("left", 0.8, 0.55, mapOf("left" to 0.8, "right" to 0.1, "straight" to 0.1)),
+                AxisPrediction("brake", 0.7, 0.4, mapOf("accelerate" to 0.1, "brake" to 0.7, "steady" to 0.2)),
+                0.8,
+            ),
+            prediction,
+        )
     }
 }

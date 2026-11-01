@@ -38,7 +38,7 @@ fun AppScreen(
             Row(modifier = Modifier.fillMaxSize()) {
                 NavPanel(ui.route, ui.nav, ui.map, Modifier.weight(1f).fillMaxHeight())
                 Column(modifier = Modifier.weight(1f).fillMaxHeight()) {
-                    HardwarePanel(ui.hardware, Modifier.weight(1f).fillMaxWidth())
+                    HardwarePanel(ui.hardware, ui.forecast, ui.probabilities, Modifier.weight(1f).fillMaxWidth())
                     ControlBar(ui, player, onSelect, onStart, onStartFull, onStop, onRequestSpeedPermission)
                 }
             }

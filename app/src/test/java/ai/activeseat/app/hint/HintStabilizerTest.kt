@@ -1,5 +1,6 @@
 package ai.activeseat.app.hint
 
+import ai.activeseat.app.prediction.AxisPrediction
 import ai.activeseat.app.prediction.PredictResult
 import ai.activeseat.app.prediction.Prediction
 import org.junit.Assert.assertEquals
@@ -15,7 +16,14 @@ class HintStabilizerTest {
         longitudinal: String = "steady",
         longitudinalP: Double = 0.9,
         horizonSec: Double = 2.0,
-    ) = Prediction(horizonSec, lateral, lateralP, longitudinal, longitudinalP, 0.0)
+        lateralStrength: Double = 0.7,
+        longitudinalStrength: Double = 0.7,
+    ) = Prediction(
+        horizonSec,
+        AxisPrediction(lateral, lateralP, lateralStrength, mapOf(lateral to lateralP)),
+        AxisPrediction(longitudinal, longitudinalP, longitudinalStrength, mapOf(longitudinal to longitudinalP)),
+        0.0,
+    )
 
     private fun success(vararg predictions: Prediction, rttMs: Long = 500) =
         PredictResult.Success(rttMs, 0, predictions.toList())
@@ -37,17 +45,16 @@ class HintStabilizerTest {
         assertEquals(LongitudinalCue.BRAKE, longitudinalResult("brake", 0.6).longitudinal)
     }
 
-    @Test fun strengthFollowsTheProbabilityBand() {
-        assertEquals(0.15 / 0.55, lateralResult("left", 0.6).lateralStrength, 1e-9)
-        assertEquals(1.0, lateralResult("left", 1.0).lateralStrength, 1e-9)
+    @Test fun strengthComesFromThePredictionNotTheProbability() {
+        val hint = stabilizer.onResult(success(prediction("left", 0.6, "brake", 0.95, lateralStrength = 1.0, longitudinalStrength = 0.4)))
+        assertEquals(1.0, hint.lateralStrength, 1e-9)
+        assertEquals(0.4, hint.longitudinalStrength, 1e-9)
     }
 
-    @Test fun strengthIsZeroAtOffThresholdWhileStillOn() {
-        lateralResult("left", 0.8)
-        now += 5000
-        val hint = lateralResult("left", 0.45)
-        assertEquals(LateralCue.LEFT, hint.lateral)
-        assertEquals(0.0, hint.lateralStrength, 1e-9)
+    @Test fun strengthFollowsEachNewPredictionWhileOn() {
+        stabilizer.onResult(success(prediction("left", 0.8, lateralStrength = 0.5)))
+        now += 100
+        assertEquals(0.9, stabilizer.onResult(success(prediction("left", 0.5, lateralStrength = 0.9))).lateralStrength, 1e-9)
     }
 
     @Test fun hysteresisBandKeepsCueOn() {
@@ -89,7 +96,6 @@ class HintStabilizerTest {
         now += 1
         val hint = lateralResult("right", 0.6)
         assertEquals(LateralCue.RIGHT, hint.lateral)
-        assertEquals(0.15 / 0.55, hint.lateralStrength, 1e-9)
     }
 
     @Test fun directLongitudinalReversalIgnoresMinHold() {
@@ -192,6 +198,25 @@ class HintStabilizerTest {
         lateralResult("left", 0.8)
         stabilizer.onResult(PredictResult.Failure("down"))
         assertEquals(LateralCue.LEFT, lateralResult("left", 0.6).lateral)
+    }
+
+    @Test fun probabilitiesComeFromTheChosenHorizon() {
+        fun axis(vararg p: Pair<String, Double>) = AxisPrediction("straight", 0.5, 0.0, mapOf(*p))
+        val near = Prediction(2.0, axis("left" to 0.1, "right" to 0.2), axis("accelerate" to 0.3, "brake" to 0.4), 0.0)
+        val far = Prediction(9.0, axis("left" to 0.9), axis("brake" to 0.9), 0.0)
+        stabilizer.onResult(success(near, far))
+        assertEquals(MotionProbabilities(forward = 0.3, back = 0.4, left = 0.1, right = 0.2), stabilizer.probabilities())
+    }
+
+    @Test fun probabilitiesClearOnFailureAndWhenStale() {
+        stabilizer.onResult(success(prediction("left", 0.8).copy(lateral = AxisPrediction("left", 0.8, 0.5, mapOf("left" to 0.8)))))
+        stabilizer.onResult(PredictResult.Failure("down"))
+        assertEquals(MotionProbabilities(), stabilizer.probabilities())
+
+        stabilizer.onResult(success(prediction("left", 0.8).copy(lateral = AxisPrediction("left", 0.8, 0.5, mapOf("left" to 0.8)))))
+        now += 2001
+        stabilizer.tick()
+        assertEquals(MotionProbabilities(), stabilizer.probabilities())
     }
 
     private val horizons = arrayOf(
