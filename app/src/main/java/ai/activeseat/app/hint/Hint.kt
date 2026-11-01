@@ -11,3 +11,11 @@ data class Hint(
     val longitudinal: LongitudinalCue = LongitudinalCue.NONE,
     val longitudinalStrength: Double = 0.0,
 )
+
+/** Jev's raw probability of each direction at the chosen horizon, all 0 when there is no fresh result. */
+data class MotionProbabilities(
+    val forward: Double = 0.0,
+    val back: Double = 0.0,
+    val left: Double = 0.0,
+    val right: Double = 0.0,
+)

@@ -31,10 +31,21 @@ const jevResponse = () => ({
     longitudinal_0: { type: 'choice', choice: 'brake', probabilities: { accelerate: 0.1, brake: 0.7, steady: 0.2 } },
     lateral_1: { type: 'choice', choice: 'straight', probabilities: { left: 0.3, right: 0.1, straight: 0.6 } },
     longitudinal_1: { type: 'choice', choice: 'steady', probabilities: { accelerate: 0.1, brake: 0.4, steady: 0.5 } },
+    lateral_strength: { type: 'choice', choice: 'gentle', probabilities: { gentle: 0.75, firm: 0.25 } },
+    longitudinal_strength: { type: 'choice', choice: 'firm', probabilities: { gentle: 0.3, firm: 0.7 } },
   },
   usage: { inputTokens: 400, outputTokens: 60 },
   providerMetadata: {
-    typesafe: { confidence: { lateral_0: 0.7, longitudinal_0: 0.6, lateral_1: 0.5, longitudinal_1: 0.4 } },
+    typesafe: {
+      confidence: {
+        lateral_0: 0.7,
+        longitudinal_0: 0.6,
+        lateral_1: 0.5,
+        longitudinal_1: 0.4,
+        lateral_strength: 0.5,
+        longitudinal_strength: 0.5,
+      },
+    },
   },
 });
 
@@ -148,8 +159,10 @@ describe('jev request', () => {
     assert.deepEqual(Object.keys(sent.questions).sort(), [
       'lateral_0',
       'lateral_1',
+      'lateral_strength',
       'longitudinal_0',
       'longitudinal_1',
+      'longitudinal_strength',
     ]);
     assert.equal(sent.questions.lateral_1.type, 'choice');
     assert.match(sent.questions.lateral_1.instructions, /2 seconds/);
@@ -239,6 +252,8 @@ describe('jev request', () => {
     assert.deepEqual([...new Set(numbers)].sort(), ['0', '0.6', '1', '1.6', '15', '2']);
     assert.deepEqual(Object.keys(questions.lateral_0.criteria), ['left', 'right', 'straight']);
     assert.deepEqual(Object.keys(questions.longitudinal_0.criteria), ['accelerate', 'brake', 'steady']);
+    assert.deepEqual(Object.keys(questions.lateral_strength.criteria), ['gentle', 'firm']);
+    assert.deepEqual(Object.keys(questions.longitudinal_strength.criteria), ['gentle', 'firm']);
   });
 });
 
@@ -254,17 +269,51 @@ describe('response mapping', () => {
     assert.deepEqual(body.predictions, [
       {
         horizonSec: 1.6,
-        lateral: { value: 'left', probability: 0.8, confidence: 0.7 },
-        longitudinal: { value: 'brake', probability: 0.7, confidence: 0.6 },
+        lateral: {
+          value: 'left',
+          probability: 0.8,
+          confidence: 0.7,
+          strength: 0.55, // 0.75 × 0.4 + 0.25 × 1
+          probabilities: { left: 0.8, right: 0.1, straight: 0.1 },
+        },
+        longitudinal: {
+          value: 'brake',
+          probability: 0.7,
+          confidence: 0.6,
+          strength: 0.82, // 0.3 × 0.4 + 0.7 × 1
+          probabilities: { accelerate: 0.1, brake: 0.7, steady: 0.2 },
+        },
         hint: 0.8,
       },
       {
         horizonSec: 2,
-        lateral: { value: 'straight', probability: 0.6, confidence: 0.5 },
-        longitudinal: { value: 'steady', probability: 0.5, confidence: 0.4 },
+        lateral: {
+          value: 'straight',
+          probability: 0.6,
+          confidence: 0.5,
+          strength: 0,
+          probabilities: { left: 0.3, right: 0.1, straight: 0.6 },
+        },
+        longitudinal: {
+          value: 'steady',
+          probability: 0.5,
+          confidence: 0.4,
+          strength: 0,
+          probabilities: { accelerate: 0.1, brake: 0.4, steady: 0.5 },
+        },
         hint: 0.4,
       },
     ]);
+  });
+
+  it('gives all firm full strength and all gentle the gentle strength', async () => {
+    const jev = jevResponse();
+    jev.answers.lateral_strength.probabilities = { gentle: 0, firm: 1 };
+    jev.answers.longitudinal_strength.probabilities = { gentle: 1, firm: 0 };
+    mockGateway(replyWith(jev));
+    const { predictions } = await (await post(validInput())).json();
+    assert.equal(predictions[0].lateral.strength, 1);
+    assert.equal(predictions[0].longitudinal.strength, 0.4);
   });
 
   it('accepts confidence on the answer object', async () => {
@@ -284,6 +333,9 @@ describe('response mapping', () => {
     'missing question': (jev) => delete jev.answers.longitudinal_1,
     'unknown choice': (jev) => (jev.answers.lateral_0.choice = 'up'),
     'missing probabilities': (jev) => delete jev.answers.lateral_0.probabilities,
+    'missing class probability': (jev) => delete jev.answers.lateral_0.probabilities.right,
+    'missing strength answer': (jev) => delete jev.answers.lateral_strength,
+    'missing strength probability': (jev) => delete jev.answers.longitudinal_strength.probabilities.firm,
     'missing confidence': (jev) => delete jev.providerMetadata,
   };
 

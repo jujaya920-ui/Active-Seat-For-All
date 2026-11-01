@@ -14,6 +14,7 @@ import ai.activeseat.app.hint.HintConfig
 import ai.activeseat.app.hint.HintStabilizer
 import ai.activeseat.app.hint.LateralCue
 import ai.activeseat.app.hint.LongitudinalCue
+import ai.activeseat.app.hint.MotionProbabilities
 import ai.activeseat.app.hint.RttTracker
 import ai.activeseat.app.nav.NavRoute
 import ai.activeseat.app.nav.NavState
@@ -72,6 +73,8 @@ data class UiState(
     val map: RouteMap? = null,
     val nav: NavState? = null,
     val hardware: HardwareCommand = HardwareCommand(),
+    val forecast: Hint = Hint(),
+    val probabilities: MotionProbabilities = MotionProbabilities(),
 )
 
 /** Wires the packages together: the only place that sees both demo and product code. */
@@ -237,8 +240,9 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
     private fun publish(hint: Hint) {
         if (BuildConfig.DEBUG && hint != lastHint) Log.d(TAG, "HINT $hint")
         lastHint = hint
-        val hardware = (testHint ?: hint).toHardwareCommand()
-        _ui.update { it.copy(hardware = hardware) }
+        val shown = testHint ?: hint
+        val probabilities = testHint?.toProbabilities() ?: stabilizer.probabilities()
+        _ui.update { it.copy(hardware = shown.toHardwareCommand(), forecast = shown, probabilities = probabilities) }
     }
 
     private fun Scenario.toDestination(): Destination {
@@ -266,13 +270,20 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
         getApplication<Application>().assets.open(path).use { BitmapFactory.decodeStream(it, null, options)!!.asImageBitmap() }
     }.getOrNull()
 
+    private fun Hint.toProbabilities() = MotionProbabilities(
+        forward = if (longitudinal == LongitudinalCue.ACCELERATE) 1.0 else 0.0,
+        back = if (longitudinal == LongitudinalCue.BRAKE) 1.0 else 0.0,
+        left = if (lateral == LateralCue.LEFT) 1.0 else 0.0,
+        right = if (lateral == LateralCue.RIGHT) 1.0 else 0.0,
+    )
+
     private fun describe(result: PredictResult?): String = when (result) {
         null -> "대기 중"
         PredictResult.NotConfigured -> "서버 미설정"
         is PredictResult.Failure -> "실패: ${result.message}"
         is PredictResult.Success -> {
             val first = result.predictions.firstOrNull()
-            val detail = first?.let { "${it.horizonSec}s ${it.lateral}/${it.longitudinal}" }
+            val detail = first?.let { "${it.horizonSec}s ${it.lateral.value}/${it.longitudinal.value}" }
             "왕복 ${result.rttMs}ms ${detail ?: "예측 없음"}"
         }
     }

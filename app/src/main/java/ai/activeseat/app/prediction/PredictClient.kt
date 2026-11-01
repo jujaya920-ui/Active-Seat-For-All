@@ -8,12 +8,18 @@ private const val PREDICT_PATH = "/api/predict"
 private const val CONNECT_TIMEOUT_MS = 2000
 private const val READ_TIMEOUT_MS = 3000
 
+/** One axis of a prediction. [strength] is 0..1 and [probabilities] covers every direction. */
+data class AxisPrediction(
+    val value: String,
+    val probability: Double,
+    val strength: Double,
+    val probabilities: Map<String, Double>,
+)
+
 data class Prediction(
     val horizonSec: Double,
-    val lateral: String,
-    val lateralProbability: Double,
-    val longitudinal: String,
-    val longitudinalProbability: Double,
+    val lateral: AxisPrediction,
+    val longitudinal: AxisPrediction,
     val hint: Double,
 )
 
@@ -27,17 +33,23 @@ fun parsePredictResponse(body: String): List<Prediction> {
     val items = JSONObject(body).getJSONArray("predictions")
     return List(items.length()) { index ->
         val item = items.getJSONObject(index)
-        val lateral = item.getJSONObject("lateral")
-        val longitudinal = item.getJSONObject("longitudinal")
         Prediction(
             horizonSec = item.getDouble("horizonSec"),
-            lateral = lateral.getString("value"),
-            lateralProbability = lateral.getDouble("probability"),
-            longitudinal = longitudinal.getString("value"),
-            longitudinalProbability = longitudinal.getDouble("probability"),
+            lateral = parseAxis(item.getJSONObject("lateral")),
+            longitudinal = parseAxis(item.getJSONObject("longitudinal")),
             hint = item.getDouble("hint"),
         )
     }
+}
+
+private fun parseAxis(axis: JSONObject): AxisPrediction {
+    val probabilities = axis.getJSONObject("probabilities")
+    return AxisPrediction(
+        value = axis.getString("value"),
+        probability = axis.getDouble("probability"),
+        strength = axis.getDouble("strength"),
+        probabilities = probabilities.keys().asSequence().associateWith(probabilities::getDouble),
+    )
 }
 
 /** Blocking client for `POST {url}/api/predict`. `url` is the server root. */

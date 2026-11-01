@@ -1,5 +1,6 @@
 package ai.activeseat.app.hint
 
+import ai.activeseat.app.prediction.AxisPrediction
 import ai.activeseat.app.prediction.PredictResult
 import ai.activeseat.app.prediction.Prediction
 import kotlin.math.abs
@@ -18,6 +19,7 @@ class HintStabilizer(
     private val lateral = Axis(config, LateralCue.NONE)
     private val longitudinal = Axis(config, LongitudinalCue.NONE)
     private var lastSuccessMs: Long? = null
+    private var probabilities = MotionProbabilities()
 
     @Synchronized
     fun onResult(result: PredictResult?): Hint {
@@ -31,8 +33,9 @@ class HintStabilizer(
         // is the best evidence of how much of the horizon is already spent.
         rtt.record(result.rttMs)
         val prediction = nearest(result.predictions)
-        lateral.update(prediction.lateral.toLateralCue(), prediction.lateralProbability, nowMs)
-        longitudinal.update(prediction.longitudinal.toLongitudinalCue(), prediction.longitudinalProbability, nowMs)
+        lateral.update(prediction.lateral.value.toLateralCue(), prediction.lateral, nowMs)
+        longitudinal.update(prediction.longitudinal.value.toLongitudinalCue(), prediction.longitudinal, nowMs)
+        probabilities = prediction.toMotionProbabilities()
         return hint()
     }
 
@@ -43,6 +46,9 @@ class HintStabilizer(
         return hint()
     }
 
+    @Synchronized
+    fun probabilities(): MotionProbabilities = probabilities
+
     /** On a tie the first listed prediction wins. */
     private fun nearest(predictions: List<Prediction>): Prediction {
         val targetSec = config.displayLeadSec + rtt.estimateMs() / MS_PER_SEC
@@ -52,6 +58,7 @@ class HintStabilizer(
     private fun allOff() {
         lateral.off()
         longitudinal.off()
+        probabilities = MotionProbabilities()
     }
 
     private fun hint() = Hint(lateral.cue, lateral.strength, longitudinal.cue, longitudinal.strength)
@@ -64,14 +71,15 @@ private class Axis<C : Any>(private val config: HintConfig, private val none: C)
         private set
     private var onSinceMs = 0L
 
-    fun update(next: C, probability: Double, nowMs: Long) {
+    /** Probability decides whether the cue is on. How strong it is comes from the prediction alone. */
+    fun update(next: C, axis: AxisPrediction, nowMs: Long) {
         when {
             next == none -> releaseAfterHold(nowMs)
-            next == cue && probability >= config.offProbability -> strength = strengthOf(probability)
-            next != cue && probability >= config.onProbability -> {
+            next == cue && axis.probability >= config.offProbability -> strength = axis.strength
+            next != cue && axis.probability >= config.onProbability -> {
                 // Covers both turning on and a direct reversal, which skips the min hold.
                 cue = next
-                strength = strengthOf(probability)
+                strength = axis.strength
                 onSinceMs = nowMs
             }
             else -> releaseAfterHold(nowMs)
@@ -87,10 +95,14 @@ private class Axis<C : Any>(private val config: HintConfig, private val none: C)
     private fun releaseAfterHold(nowMs: Long) {
         if (nowMs - onSinceMs >= config.minHoldMs) off()
     }
-
-    private fun strengthOf(probability: Double): Double =
-        ((probability - config.offProbability) / (1 - config.offProbability)).coerceIn(0.0, 1.0)
 }
+
+private fun Prediction.toMotionProbabilities() = MotionProbabilities(
+    forward = longitudinal.probabilities["accelerate"] ?: 0.0,
+    back = longitudinal.probabilities["brake"] ?: 0.0,
+    left = lateral.probabilities["left"] ?: 0.0,
+    right = lateral.probabilities["right"] ?: 0.0,
+)
 
 private fun String.toLateralCue() = when (this) {
     "left" -> LateralCue.LEFT

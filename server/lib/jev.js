@@ -13,6 +13,11 @@ const LONGITUDINAL_NEUTRAL = 'steady';
 const LATERAL_CLASSES = ['left', 'right', LATERAL_NEUTRAL];
 const LONGITUDINAL_CLASSES = ['accelerate', 'brake', LONGITUDINAL_NEUTRAL];
 
+// Provisional strength of each band. Strength has its own questions because folding it into the
+// direction classes lowered direction accuracy on every measured route.
+const GENTLE_STRENGTH = 0.4;
+const FIRM_STRENGTH = 1;
+
 const round = (value, digits) => Number(value.toFixed(digits));
 
 // Spelled out because Jev confused a negative steeringDeg with the name of the next turn.
@@ -43,6 +48,29 @@ function longitudinalQuestion(h, i) {
       accelerate: 'speed is rising by more than 0.6 m/s² at that moment',
       brake: 'speed is falling by more than 0.6 m/s² at that moment',
       [LONGITUDINAL_NEUTRAL]: 'speed is changing by less than 0.6 m/s² at that moment',
+    },
+  };
+}
+
+// One strength per axis covers every horizon: the horizons are moments of the same manoeuvre.
+function lateralStrengthQuestion(h) {
+  return {
+    type: 'choice',
+    instructions: `If the car takes a corner or curve within the next ${h} seconds, how hard will a passenger be pushed sideways at its peak? Judge it from the signals, \`nextTurn\`, \`wheelNow\` and \`motion\`. The push grows with the square of the speed and with how tight the path is, so the same wheel angle pushes much harder at higher speed, and a driver normally slows for a tight turn. If the car stays straight, answer for the slight curve it follows.`,
+    criteria: {
+      gentle: 'the peak sideways push is below 2 m/s²',
+      firm: 'the peak sideways push is 2 m/s² or more',
+    },
+  };
+}
+
+function longitudinalStrengthQuestion(h) {
+  return {
+    type: 'choice',
+    instructions: `If the car speeds up or slows down within the next ${h} seconds, how hard will a passenger feel it at its peak? Judge it from \`motion\`, the signals, \`nextTurn\`, \`frontEvent\` and \`stopDecelAfterMps2\`, which shows how hard the driver would have to brake. A car pulling away gently stays gentle, and a late stop for something close ahead is firm. If the speed holds, answer for the small change that happens anyway.`,
+    criteria: {
+      gentle: 'the peak speed change is below 2 m/s²',
+      firm: 'the peak speed change is 2 m/s² or more',
     },
   };
 }
@@ -189,34 +217,52 @@ export function buildJevRequest(input) {
     questions[`lateral_${i}`] = lateralQuestion(h, i);
     questions[`longitudinal_${i}`] = longitudinalQuestion(h, i);
   });
+  const lastHorizon = Math.max(...horizonsSec);
+  questions.lateral_strength = lateralStrengthQuestion(lastHorizon);
+  questions.longitudinal_strength = longitudinalStrengthQuestion(lastHorizon);
 
   return { model: JEV_MODEL, state: buildState(input), questions };
 }
 
 const isProbability = (v) => isFiniteNumber(v) && v >= 0 && v <= 1;
 
-function mapChoice(jev, key, classes) {
+// Expected band strength, from an answer the same checks apply to as any other.
+function mapStrength(jev, key) {
+  const answer = jev.answers[key];
+  const gentle = answer?.probabilities?.gentle;
+  const firm = answer?.probabilities?.firm;
+  if (!isProbability(gentle) || !isProbability(firm) || gentle + firm === 0) {
+    throw new UpstreamError('upstream_bad_response', `missing strength for ${key}`);
+  }
+  return round((gentle * GENTLE_STRENGTH + firm * FIRM_STRENGTH) / (gentle + firm), 3);
+}
+
+function mapAxis(jev, key, classes, neutral, strength) {
   const answer = jev.answers[key];
   if (!isObject(answer) || !classes.includes(answer.choice)) {
     throw new UpstreamError('upstream_bad_response', `invalid answer for ${key}`);
   }
 
-  const probability = answer.probabilities?.[answer.choice];
+  const { probabilities } = answer;
   // The docs show confidence under providerMetadata for the AI SDK. The raw HTTP location
   // is not verified, so the answer object is accepted as well.
   const confidence = answer.confidence ?? jev.providerMetadata?.typesafe?.confidence?.[key];
-
-  if (!isProbability(probability) || !isProbability(confidence)) {
+  if (!isObject(probabilities) || !classes.every((c) => isProbability(probabilities[c])) || !isProbability(confidence)) {
     throw new UpstreamError('upstream_bad_response', `missing probability or confidence for ${key}`);
   }
-  return { value: answer.choice, probability, confidence };
+
+  return {
+    value: answer.choice,
+    probability: probabilities[answer.choice],
+    confidence,
+    strength: answer.choice === neutral ? 0 : strength,
+    probabilities: Object.fromEntries(classes.map((c) => [c, probabilities[c]])),
+  };
 }
 
-// Largest probability of a moving class on this axis, read from the direction answer.
-function motionProbability(jev, key, neutral) {
-  const { [neutral]: _, ...moving } = jev.answers[key].probabilities;
-  return Math.max(...Object.values(moving).filter(isProbability));
-}
+// Largest probability of a moving class on this axis.
+const motionProbability = ({ probabilities }, classes, neutral) =>
+  Math.max(...classes.filter((c) => c !== neutral).map((c) => probabilities[c]));
 
 // Maps a Jev response to the contract's predictions. Throws rather than filling gaps.
 export function mapJevResponse(jev, horizonsSec) {
@@ -224,15 +270,21 @@ export function mapJevResponse(jev, horizonsSec) {
     throw new UpstreamError('upstream_bad_response', 'response has no answers');
   }
 
-  return horizonsSec.map((horizonSec, i) => ({
-    horizonSec,
-    lateral: mapChoice(jev, `lateral_${i}`, LATERAL_CLASSES),
-    longitudinal: mapChoice(jev, `longitudinal_${i}`, LONGITUDINAL_CLASSES),
-    hint: Math.max(
-      motionProbability(jev, `lateral_${i}`, LATERAL_NEUTRAL),
-      motionProbability(jev, `longitudinal_${i}`, LONGITUDINAL_NEUTRAL),
-    ),
-  }));
+  const lateralStrength = mapStrength(jev, 'lateral_strength');
+  const longitudinalStrength = mapStrength(jev, 'longitudinal_strength');
+  return horizonsSec.map((horizonSec, i) => {
+    const lateral = mapAxis(jev, `lateral_${i}`, LATERAL_CLASSES, LATERAL_NEUTRAL, lateralStrength);
+    const longitudinal = mapAxis(jev, `longitudinal_${i}`, LONGITUDINAL_CLASSES, LONGITUDINAL_NEUTRAL, longitudinalStrength);
+    return {
+      horizonSec,
+      lateral,
+      longitudinal,
+      hint: Math.max(
+        motionProbability(lateral, LATERAL_CLASSES, LATERAL_NEUTRAL),
+        motionProbability(longitudinal, LONGITUDINAL_CLASSES, LONGITUDINAL_NEUTRAL),
+      ),
+    };
+  });
 }
 
 // Sends one request to the gateway. The timeout also covers reading the response body.
