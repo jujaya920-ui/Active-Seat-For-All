@@ -33,6 +33,8 @@ data class Scenario(
     val frontEvents: List<RouteMark>,
     val timeline: List<ScenarioFrame>,
     val demoWindow: DemoWindow? = null,
+    val mapSize: Pair<Int, Int> = 0 to 0,
+    val originRoad: String = "",
 ) {
     val durationSec: Double get() = timeline.last().t
 
@@ -95,6 +97,7 @@ fun parseScenario(json: String): Scenario {
     require(timeline.zipWithNext().all { (a, b) -> a.t < b.t }) { "timeline must be sorted by t" }
 
     val route = root.getJSONArray("routePx")
+    val mapSize = root.getJSONArray("mapSize")
     return Scenario(
         id = root.getString("id"),
         title = root.getString("title"),
@@ -108,6 +111,8 @@ fun parseScenario(json: String): Scenario {
         frontEvents = root.getJSONArray("frontEvents").objects().map { it.toRouteMark() },
         timeline = timeline,
         demoWindow = root.optJSONObject("demoWindow")?.let { DemoWindow(it.getDouble("fromSec"), it.getDouble("toSec")) },
+        mapSize = mapSize.getInt(0) to mapSize.getInt(1),
+        originRoad = root.optString("originRoad"),
     )
 }
 

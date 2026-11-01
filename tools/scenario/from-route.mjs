@@ -630,6 +630,7 @@ export function chooseDemoWindow(timeline) {
 
 export function buildScenario({ id, title }, osrm) {
   const route = parseRoute(osrm);
+  const { width, height } = fitRoute(route.coordinates);
   const { gridM } = DRIVER;
   const cells = Math.round(route.lengthM / gridM);
   const short = route.lengthM <= SHORT.maxLengthM;
@@ -661,6 +662,8 @@ export function buildScenario({ id, title }, osrm) {
     id,
     title,
     mapImage: `maps/${id}.webp`,
+    mapSize: [width, height],
+    originRoad: osrm.routes[0].legs[0].steps.find((step) => step.name).name,
     demoWindow: chooseDemoWindow(timeline),
     routePx: buildRoutePx(route),
     routeLengthM: Math.round(route.lengthM),

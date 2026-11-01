@@ -3,7 +3,6 @@
 import { existsSync, readFileSync } from 'node:fs';
 import { dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { MAP } from './projection.mjs';
 import {
   FRONT_EVENT_TYPES,
   LIMITS,
@@ -18,7 +17,7 @@ import {
   polylineLength,
 } from './common.mjs';
 
-const TOP_KEYS = ['id', 'title', 'mapImage', 'routePx', 'routeLengthM', 'turns', 'frontEvents', 'timeline'];
+const TOP_KEYS = ['id', 'title', 'mapImage', 'mapSize', 'originRoad', 'routePx', 'routeLengthM', 'turns', 'frontEvents', 'timeline'];
 const OPTIONAL_TOP_KEYS = ['demoWindow'];
 const ROW_KEYS = ['t', 'speedKph', 'steeringDeg', 'brakePct', 'acceleratorPct', 'turnSignal'];
 const TURN_SIGNALS = ['Off', 'BlinkLeft', 'BlinkRight'];
@@ -42,13 +41,16 @@ function checkFormat(s, errors) {
   if (typeof s.id !== 'string' || !/^[a-z0-9-]+$/.test(s.id)) errors.push('id must be a kebab-case string');
   if (typeof s.title !== 'string' || s.title === '') errors.push('title must be a non-empty string');
   if (s.mapImage !== `maps/${s.id}.webp`) errors.push(`mapImage must be maps/${s.id}.webp`);
+  if (typeof s.originRoad !== 'string' || s.originRoad === '') errors.push('originRoad must be a non-empty string');
+  const [mapWidth, mapHeight] = Array.isArray(s.mapSize) ? s.mapSize : [];
+  if (!isNumber(mapWidth) || !isNumber(mapHeight)) errors.push('mapSize must be [width, height]');
   if (!isNumber(s.routeLengthM) || s.routeLengthM <= 0) errors.push('routeLengthM must be positive');
 
   if (!Array.isArray(s.routePx) || s.routePx.length < 2) errors.push('routePx needs at least 2 points');
   else if (!s.routePx.every((p) => Array.isArray(p) && p.length === 2 && p.every(isNumber))) {
     errors.push('routePx points must be [x, y] numbers');
-  } else if (s.routePx.some(([x, y]) => x < 0 || x > MAP.width || y < 0 || y > MAP.height)) {
-    errors.push(`routePx must stay inside ${MAP.width}x${MAP.height}`);
+  } else if (s.routePx.some(([x, y]) => x < 0 || x > mapWidth || y < 0 || y > mapHeight)) {
+    errors.push(`routePx must stay inside ${mapWidth}x${mapHeight}`);
   }
   if (Array.isArray(s.routePx) && s.routePx.length > LIMITS.maxRoutePxPoints) {
     errors.push(`routePx has ${s.routePx.length} points, limit ${LIMITS.maxRoutePxPoints}`);

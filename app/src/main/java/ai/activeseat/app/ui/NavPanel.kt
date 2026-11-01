@@ -1,59 +1,89 @@
 package ai.activeseat.app.ui
 
 import ai.activeseat.app.nav.NavMark
-import ai.activeseat.app.nav.NavRoute
 import ai.activeseat.app.nav.NavState
+import androidx.compose.animation.core.LinearEasing
+import androidx.compose.animation.core.animateFloatAsState
+import androidx.compose.animation.core.tween
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
+import androidx.compose.foundation.border
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.IntrinsicSize
+import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.RowScope
+import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
-import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.shape.CircleShape
+import androidx.compose.foundation.verticalScroll
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.Close
+import androidx.compose.material.icons.filled.Home
+import androidx.compose.material.icons.filled.Place
+import androidx.compose.material.icons.filled.Search
+import androidx.compose.material.icons.filled.Star
+import androidx.compose.material3.Icon
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableFloatStateOf
+import androidx.compose.runtime.mutableIntStateOf
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clipToBounds
 import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.ImageBitmap
-import androidx.compose.ui.graphics.Path
-import androidx.compose.ui.graphics.StrokeCap
-import androidx.compose.ui.graphics.StrokeJoin
-import androidx.compose.ui.graphics.drawscope.DrawScope
-import androidx.compose.ui.graphics.drawscope.Stroke
-import androidx.compose.ui.graphics.drawscope.rotate
+import androidx.compose.ui.graphics.vector.ImageVector
+import androidx.compose.ui.layout.onSizeChanged
+import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.text.font.FontWeight
-import androidx.compose.ui.unit.IntOffset
-import androidx.compose.ui.unit.IntSize
+import androidx.compose.ui.text.style.TextOverflow
+import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
-import kotlin.math.max
+import java.util.Locale
 import kotlin.math.roundToInt
 
 private const val MAP_ATTRIBUTION = "© OpenStreetMap contributors · OpenFreeMap © OpenMapTiles"
-const val MAP_WIDTH_PX = 1000f
-const val MAP_HEIGHT_PX = 1440f
-private const val GRID_STEP_PX = 100
 
-private val Background = Color(0xFF10161C)
-private val GridLine = Color(0xFF1E2A33)
-private val RouteAhead = Color(0xFF546E7A)
-private val RouteTravelled = Color(0xFF4FC3F7)
-private val TurnMarker = Color(0xFFECEFF1)
-private val Amber = Color(0xFFFFB300)
-private val CardBackground = Color(0xE61A232B)
-private val Label = Color(0xFFB0BEC5)
+// The sampler ticks at this rate, so the car glides from one sample to the next.
+private const val CAR_GLIDE_MS = 200
 
-/** How route coordinates land on a canvas: `canvas = offset + scale * route`. */
-data class MapFit(val scale: Float, val offsetX: Float, val offsetY: Float)
+// A bend in the polyline turns the map over this long instead of snapping it.
+private const val MAP_TURN_MS = 700
 
-/** Scales the route space to cover the canvas without distortion, top aligned. The card sits over the map's lower part. */
-fun fitMap(canvasWidth: Float, canvasHeight: Float): MapFit {
-    val scale = max(canvasWidth / MAP_WIDTH_PX, canvasHeight / MAP_HEIGHT_PX)
-    return MapFit(scale, (canvasWidth - scale * MAP_WIDTH_PX) / 2, 0f)
+private val Ink = Color(0xFF111111)
+private val SubInk = Color(0xFF6B7280)
+private val Line = Color(0xFFD5D9E0)
+private val Disabled = Color(0xFFB0B0B0)
+private val Divider = Color(0xFFF0F1F4)
+private val Selected = Color(0xFF6C5CE7)
+private val Unselected = Color(0xFFF5F5F5)
+private val Warning = Color(0xFFFF8A00)
+private val CardWidth = 400.dp
+
+/** One route option on the preview. */
+data class RouteChoice(val label: String, val durationSec: Double, val lengthM: Double, val fullRoute: Boolean)
+
+/** One scenario's map: its size in map pixels, its wide overview, and its detail tiles. */
+class RouteMap(val width: Int, val height: Int, val overview: ImageBitmap?, private val tile: (MapTile) -> ImageBitmap?) {
+    fun loadTile(at: MapTile): ImageBitmap? = tile(at)
 }
 
 fun turnLabel(type: String): String = when (type) {
@@ -68,135 +98,374 @@ fun turnLabel(type: String): String = when (type) {
     else -> type
 }
 
+fun turnArrow(type: String): String = when (type) {
+    "TURN_LEFT" -> "↰"
+    "TURN_RIGHT" -> "↱"
+    "TURN_KEEP_L" -> "↖"
+    "TURN_KEEP_R", "TURN_EXIT_IC_R", "TURN_ENTER_IC_C" -> "↗"
+    "TURN_ARRIVE" -> "⚑"
+    else -> "↑"
+}
+
+fun formatDistance(metres: Double): String =
+    if (metres < 1000) "${metres.roundToInt()}m" else String.format(Locale.US, "%.1fkm", metres / 1000)
+
+fun formatDuration(seconds: Double): String = "${(seconds / 60).roundToInt().coerceAtLeast(1)}분"
+
+/** The angle equal to `target` modulo 360 that is nearest to `current`, so the map turns the short way. */
+fun nearestAngle(current: Float, target: Float): Float {
+    val delta = (target - current) % 360f
+    return current + when {
+        delta > 180f -> delta - 360f
+        delta < -180f -> delta + 360f
+        else -> delta
+    }
+}
+
+/** What NavPanel asks of the app. */
+class NavActions(
+    val onOpenFavorites: () -> Unit,
+    val onGoHome: () -> Unit,
+    val onSelect: (String) -> Unit,
+    val onStart: (fullRoute: Boolean) -> Unit,
+    val onEndGuidance: () -> Unit,
+)
+
 @Composable
-fun NavPanel(route: NavRoute?, state: NavState?, map: ImageBitmap?, modifier: Modifier) {
-    Box(modifier = modifier.background(Background)) {
-        Canvas(modifier = Modifier.fillMaxSize()) {
-            val fit = fitMap(size.width, size.height)
-            if (map != null) drawMapImage(map, fit) else drawGrid(fit)
-            if (route != null) drawRoute(route, state, fit)
-        }
-        if (route == null) {
-            Text(
-                "목적지를 선택하세요",
-                color = Color.White,
-                fontSize = 40.sp,
-                fontWeight = FontWeight.Bold,
-                modifier = Modifier.align(Alignment.Center),
+fun NavPanel(ui: UiState, actions: NavActions, modifier: Modifier) {
+    val state = ui.nav
+    var bearing by remember { mutableFloatStateOf(0f) }
+    bearing = nearestAngle(bearing, state?.headingDeg ?: 0f)
+    val heading by animateFloatAsState(bearing, tween(MAP_TURN_MS, easing = LinearEasing), label = "heading")
+    val fraction by animateFloatAsState(
+        (state?.fraction ?: 0.0).toFloat(),
+        tween(CAR_GLIDE_MS, easing = LinearEasing),
+        label = "fraction",
+    )
+    var overlayHeightPx by remember { mutableIntStateOf(0) }
+    val density = LocalDensity.current.density
+
+    BoxWithConstraints(modifier = modifier.clipToBounds().background(Color(0xFFF1F4F9))) {
+        val route = ui.route
+        val car = route?.pointAt(fraction.toDouble())
+        val camera = when {
+            ui.screen == NavScreen.PREVIEW && route != null -> overviewCamera(
+                route,
+                constraints.maxWidth.toFloat(),
+                constraints.maxHeight.toFloat(),
+                topInset = overlayHeightPx.toFloat(),
+                bottomInset = ATTRIBUTION_DP * density,
+                padding = PREVIEW_PADDING_DP * density,
+                maxScale = density,
             )
-        } else {
-            GuidanceCard(route, state, Modifier.align(Alignment.BottomCenter))
+            car == null -> MapCamera(0f, 0f, density)
+            ui.screen == NavScreen.GUIDING -> MapCamera(car.x, car.y, density, heading)
+            else -> MapCamera(car.x, car.y, density)
+        }
+        NavMap(
+            map = ui.map,
+            route = route,
+            showRoute = ui.screen == NavScreen.PREVIEW || ui.screen == NavScreen.GUIDING,
+            camera = camera,
+            carFraction = fraction,
+            carHeadingDeg = heading,
+            modifier = Modifier.fillMaxSize(),
+        )
+        Column(modifier = Modifier.fillMaxSize()) {
+            Box(modifier = Modifier.weight(1f).fillMaxWidth()) {
+                when (ui.screen) {
+                    NavScreen.HOME -> HomeOverlay(ui, actions)
+                    NavScreen.FAVORITES -> FavoritesOverlay(ui, actions)
+                    NavScreen.PREVIEW -> PreviewOverlay(ui, actions, Modifier.onSizeChanged { overlayHeightPx = it.height })
+                    NavScreen.GUIDING -> GuidingOverlay(state, actions)
+                }
+            }
+            Attribution()
         }
     }
 }
 
-private fun DrawScope.drawMapImage(map: ImageBitmap, fit: MapFit) {
-    drawImage(
-        image = map,
-        dstOffset = IntOffset(fit.offsetX.roundToInt(), fit.offsetY.roundToInt()),
-        dstSize = IntSize((MAP_WIDTH_PX * fit.scale).roundToInt(), (MAP_HEIGHT_PX * fit.scale).roundToInt()),
+private const val ATTRIBUTION_DP = 28
+private const val PREVIEW_PADDING_DP = 72
+
+@Composable
+private fun Attribution() {
+    Text(
+        MAP_ATTRIBUTION,
+        color = SubInk,
+        fontSize = 13.sp,
+        maxLines = 1,
+        modifier = Modifier.fillMaxWidth().height(ATTRIBUTION_DP.dp).background(Color.White).padding(horizontal = 12.dp, vertical = 5.dp),
     )
 }
 
-private fun DrawScope.drawGrid(fit: MapFit) {
-    for (x in 0..MAP_WIDTH_PX.toInt() step GRID_STEP_PX) {
-        drawLine(GridLine, fit.at(x.toFloat(), 0f), fit.at(x.toFloat(), MAP_HEIGHT_PX), 1.dp.toPx())
+@Composable
+private fun HomeOverlay(ui: UiState, actions: NavActions) {
+    Box(modifier = Modifier.fillMaxSize().padding(16.dp)) {
+        Column(modifier = Modifier.align(Alignment.BottomStart).width(CardWidth).border(1.dp, Line)) {
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .background(Color.Black)
+                    .clickable(onClick = actions.onOpenFavorites)
+                    .padding(horizontal = 24.dp, vertical = 26.dp),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                Icon(Icons.Filled.Search, null, tint = Color.White, modifier = Modifier.size(34.dp))
+                Spacer(Modifier.width(16.dp))
+                Text("어디로 갈까요?", color = Color(0xFFA0A0A0), fontSize = 28.sp)
+            }
+            Row(
+                modifier = Modifier.fillMaxWidth().height(100.dp).background(Color.White),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                ShortcutCell(enabled = false) { Icon(Icons.Filled.Home, "집", tint = Disabled, modifier = Modifier.size(40.dp)) }
+                VerticalRule()
+                ShortcutCell(enabled = false) { BuildingIcon(Disabled, 36.dp) }
+                VerticalRule()
+                ShortcutCell(enabled = true, onClick = actions.onOpenFavorites) {
+                    Icon(Icons.Filled.Star, "즐겨찾기", tint = Color.Black, modifier = Modifier.size(44.dp))
+                }
+            }
+        }
+        // The name is only known at the origin, so it would be wrong anywhere else on the route.
+        if (ui.originRoad.isNotEmpty() && ui.nav?.progressM == 0.0) {
+            Text(
+                ui.originRoad,
+                color = Ink,
+                fontSize = 24.sp,
+                fontWeight = FontWeight.Medium,
+                modifier = Modifier
+                    .align(Alignment.BottomEnd)
+                    .background(Color.White)
+                    .border(1.dp, Line)
+                    .padding(horizontal = 22.dp, vertical = 14.dp),
+            )
+        }
     }
-    for (y in 0..MAP_HEIGHT_PX.toInt() step GRID_STEP_PX) {
-        drawLine(GridLine, fit.at(0f, y.toFloat()), fit.at(MAP_WIDTH_PX, y.toFloat()), 1.dp.toPx())
-    }
-}
-
-private fun DrawScope.drawRoute(route: NavRoute, state: NavState?, fit: MapFit) {
-    val line = Stroke(width = 8.dp.toPx(), cap = StrokeCap.Round, join = StrokeJoin.Round)
-    val vertices = route.routePx.map { (x, y) -> fit.at(x.toFloat(), y.toFloat()) }
-    drawPath(polyline(vertices), RouteAhead, style = line)
-
-    if (state != null) {
-        val passed = vertices.take(route.pointAt(state.fraction).segment + 1)
-        drawPath(polyline(passed + fit.at(state.carX, state.carY)), RouteTravelled, style = line)
-    }
-    route.turns.forEach { drawMark(route, it, fit, TurnMarker) }
-    route.frontEvents.forEach { drawMark(route, it, fit, Amber) }
-    if (state != null) drawCar(fit.at(state.carX, state.carY), state.headingDeg)
-}
-
-private fun DrawScope.drawMark(route: NavRoute, mark: NavMark, fit: MapFit, color: Color) {
-    val point = route.pointAt(mark.atM / route.lengthM)
-    val center = fit.at(point.x, point.y)
-    drawCircle(Background, radius = 12.dp.toPx(), center = center)
-    drawCircle(color, radius = 9.dp.toPx(), center = center)
-}
-
-private fun DrawScope.drawCar(center: Offset, headingDeg: Float) {
-    val tip = 20.dp.toPx()
-    val halfWidth = 14.dp.toPx()
-    val tail = 14.dp.toPx()
-    val car = Path().apply {
-        moveTo(center.x, center.y - tip)
-        lineTo(center.x + halfWidth, center.y + tail)
-        lineTo(center.x - halfWidth, center.y + tail)
-        close()
-    }
-    rotate(headingDeg, pivot = center) {
-        drawPath(car, Color.White)
-        drawPath(car, Background, style = Stroke(width = 2.dp.toPx()))
-    }
-}
-
-private fun MapFit.at(x: Float, y: Float) = Offset(offsetX + scale * x, offsetY + scale * y)
-
-private fun polyline(points: List<Offset>) = Path().apply {
-    points.firstOrNull()?.let { moveTo(it.x, it.y) }
-    points.drop(1).forEach { lineTo(it.x, it.y) }
 }
 
 @Composable
-private fun GuidanceCard(route: NavRoute, state: NavState?, modifier: Modifier) {
+private fun RowScope.ShortcutCell(
+    enabled: Boolean,
+    onClick: () -> Unit = {},
+    icon: @Composable () -> Unit,
+) {
+    Box(
+        modifier = Modifier.weight(1f).fillMaxHeight().clickable(enabled = enabled, onClick = onClick),
+        contentAlignment = Alignment.Center,
+    ) { icon() }
+}
+
+@Composable
+private fun VerticalRule() {
+    Box(modifier = Modifier.width(1.dp).height(48.dp).background(Line))
+}
+
+// The icon font in the app has no building, and a whole icon library is not worth one glyph.
+@Composable
+private fun BuildingIcon(color: Color, size: Dp) {
+    Canvas(modifier = Modifier.size(size)) {
+        drawRect(color)
+        val window = this.size.width * 0.18f
+        for (row in 0..1) {
+            for (col in 0..2) {
+                drawRect(
+                    Color.White,
+                    topLeft = Offset(this.size.width * (0.12f + col * 0.28f), this.size.height * (0.14f + row * 0.26f)),
+                    size = Size(window, window),
+                )
+            }
+        }
+        drawRect(Color.White, topLeft = Offset(this.size.width * 0.4f, this.size.height * 0.72f), size = Size(window, this.size.height * 0.28f))
+    }
+}
+
+@Composable
+private fun FavoritesOverlay(ui: UiState, actions: NavActions) {
     Column(
-        modifier = modifier
-            .fillMaxWidth()
-            .padding(24.dp)
-            .background(CardBackground, RoundedCornerShape(20.dp))
-            .padding(28.dp),
-        verticalArrangement = Arrangement.spacedBy(14.dp),
+        modifier = Modifier
+            .padding(16.dp)
+            .width(CardWidth)
+            .fillMaxHeight()
+            .background(Color.White)
+            .border(1.dp, Line),
     ) {
-        when {
-            state == null -> Text(route.title, color = Color.White, fontSize = 40.sp, fontWeight = FontWeight.Bold)
-            state.arrived -> Text("목적지 도착", color = Color.White, fontSize = 48.sp, fontWeight = FontWeight.Bold)
-            else -> {
-                NextTurn(state)
-                state.frontEvent?.let { Field("전방 이벤트", "${it.description} ${state.frontEventDistanceM}m", Amber) }
-                Field("남은 거리", "${state.remainingM.roundToInt()}m", Color.White)
-                Text(MAP_ATTRIBUTION, color = Color(0xFF90A4AE), fontSize = 14.sp)
+        HeaderRow("즐겨찾기", actions.onGoHome)
+        DisabledPlaceRow("집을 등록해 주세요") { Icon(Icons.Filled.Home, null, tint = Disabled, modifier = Modifier.size(32.dp)) }
+        HorizontalRule()
+        DisabledPlaceRow("회사를 등록해 주세요") { BuildingIcon(Disabled, 28.dp) }
+        Box(modifier = Modifier.fillMaxWidth().height(8.dp).background(Divider))
+        Text("장소", color = Ink, fontSize = 24.sp, fontWeight = FontWeight.Bold, modifier = Modifier.padding(start = 24.dp, top = 22.dp, bottom = 8.dp))
+        Column(modifier = Modifier.weight(1f).verticalScroll(rememberScrollState())) {
+            if (ui.destinations.isEmpty()) {
+                Text("등록된 장소가 없습니다", color = SubInk, fontSize = 22.sp, modifier = Modifier.padding(24.dp))
+            }
+            ui.destinations.forEach { destination ->
+                PlaceRow(destination, onClick = { actions.onSelect(destination.id) })
+                HorizontalRule()
             }
         }
     }
 }
 
 @Composable
-private fun NextTurn(state: NavState) {
-    val turn = state.nextTurn
-    Column {
-        Text("다음 안내", color = Label, fontSize = 24.sp)
-        if (turn == null) {
-            Text("안내 없음", color = Color.White, fontSize = 40.sp, fontWeight = FontWeight.Bold)
-        } else {
+private fun HeaderRow(title: String, onClose: () -> Unit) {
+    Row(modifier = Modifier.fillMaxWidth().height(88.dp), verticalAlignment = Alignment.CenterVertically) {
+        Text(
+            title,
+            color = Ink,
+            fontSize = 28.sp,
+            fontWeight = FontWeight.Bold,
+            maxLines = 1,
+            overflow = TextOverflow.Ellipsis,
+            modifier = Modifier.weight(1f).padding(horizontal = 24.dp),
+        )
+        Box(modifier = Modifier.width(1.dp).fillMaxHeight().background(Line))
+        Box(modifier = Modifier.size(88.dp).clickable(onClick = onClose), contentAlignment = Alignment.Center) {
+            Icon(Icons.Filled.Close, "닫기", tint = Ink, modifier = Modifier.size(36.dp))
+        }
+    }
+    HorizontalRule()
+}
+
+@Composable
+private fun HorizontalRule() {
+    Box(modifier = Modifier.fillMaxWidth().height(1.dp).background(Line))
+}
+
+@Composable
+private fun DisabledPlaceRow(label: String, icon: @Composable () -> Unit) {
+    Row(
+        modifier = Modifier.fillMaxWidth().height(84.dp).padding(horizontal = 24.dp),
+        verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.spacedBy(14.dp),
+    ) {
+        icon()
+        Text(label, color = Disabled, fontSize = 22.sp)
+    }
+}
+
+@Composable
+private fun PlaceRow(destination: Destination, onClick: () -> Unit) {
+    Row(
+        modifier = Modifier.fillMaxWidth().clickable(onClick = onClick).padding(horizontal = 20.dp, vertical = 16.dp),
+        verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.spacedBy(12.dp),
+    ) {
+        Icon(Icons.Filled.Place, null, tint = Color.Black, modifier = Modifier.size(38.dp))
+        Column {
+            Text(destination.title, color = Ink, fontSize = 24.sp, fontWeight = FontWeight.Bold, maxLines = 1, overflow = TextOverflow.Ellipsis)
             Text(
-                "${turnLabel(turn.type)} ${state.nextTurnDistanceM}m",
-                color = Color.White,
-                fontSize = 48.sp,
-                fontWeight = FontWeight.Bold,
+                "${formatDistance(destination.full.lengthM)} · ${destination.originRoad} 출발",
+                color = SubInk,
+                fontSize = 19.sp,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis,
             )
-            Text(turn.description, color = Color.White, fontSize = 30.sp)
         }
     }
 }
 
 @Composable
-private fun Field(label: String, value: String, color: Color) {
-    Column {
-        Text(label, color = Label, fontSize = 24.sp)
-        Text(value, color = color, fontSize = 34.sp, fontWeight = FontWeight.Bold)
+private fun PreviewOverlay(ui: UiState, actions: NavActions, modifier: Modifier) {
+    val destination = ui.destinations.firstOrNull { it.id == ui.selectedScenario } ?: return
+    val choices = destination.choices
+    var selected by remember(destination.id) { mutableStateOf(choices.first()) }
+    Column(modifier = modifier.fillMaxWidth().background(Color.White)) {
+        HeaderRow(destination.title, actions.onGoHome)
+        choices.forEachIndexed { index, choice ->
+            RouteChoiceRow(index + 1, choice, choice == selected, onClick = { selected = choice })
+            HorizontalRule()
+        }
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .height(92.dp)
+                .background(Color(0xFF1A1A1A))
+                .clickable { actions.onStart(selected.fullRoute) },
+            horizontalArrangement = Arrangement.Center,
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            Text("안내 시작", color = Color.White, fontSize = 28.sp, fontWeight = FontWeight.Bold)
+        }
+    }
+}
+
+@Composable
+private fun RouteChoiceRow(number: Int, choice: RouteChoice, selected: Boolean, onClick: () -> Unit) {
+    val ink = if (selected) Ink else SubInk
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .height(IntrinsicSize.Min)
+            .background(if (selected) Color.White else Unselected)
+            .clickable(onClick = onClick),
+    ) {
+        Box(modifier = Modifier.width(8.dp).fillMaxHeight().background(if (selected) Selected else Unselected))
+        Column(modifier = Modifier.padding(horizontal = 20.dp, vertical = 16.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
+            Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+                Box(modifier = Modifier.size(28.dp).background(ink, CircleShape), contentAlignment = Alignment.Center) {
+                    Text("$number", color = Color.White, fontSize = 18.sp, fontWeight = FontWeight.Bold)
+                }
+                Text(choice.label, color = ink, fontSize = 22.sp, fontWeight = FontWeight.Medium)
+            }
+            Text(formatDuration(choice.durationSec), color = ink, fontSize = 36.sp, fontWeight = FontWeight.Bold)
+            Text(formatDistance(choice.lengthM), color = ink, fontSize = 22.sp)
+        }
+    }
+}
+
+@Composable
+private fun GuidingOverlay(state: NavState?, actions: NavActions) {
+    Column(modifier = Modifier.fillMaxSize()) {
+        Column(modifier = Modifier.fillMaxWidth().background(Color(0xFF1A1A1A)).padding(horizontal = 28.dp, vertical = 20.dp)) {
+            when {
+                state == null -> Unit
+                state.arrived -> GuidanceTitle("⚑", "목적지 도착", null)
+                else -> state.nextTurn?.let { NextTurn(it, state) } ?: GuidanceTitle("↑", "직진", null)
+            }
+        }
+        state?.takeUnless { it.arrived }?.frontEvent?.let { event ->
+            Text(
+                "${event.description} ${state.frontEventDistanceM}m",
+                color = Color.White,
+                fontSize = 26.sp,
+                fontWeight = FontWeight.Bold,
+                modifier = Modifier.fillMaxWidth().background(Warning).padding(horizontal = 28.dp, vertical = 12.dp),
+            )
+        }
+        Spacer(Modifier.weight(1f))
+        Row(
+            modifier = Modifier.padding(16.dp).fillMaxWidth().background(Color.White).border(1.dp, Line),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            Column(modifier = Modifier.weight(1f).padding(horizontal = 24.dp, vertical = 14.dp)) {
+                Text("남은 거리", color = SubInk, fontSize = 20.sp)
+                Text(formatDistance((state?.remainingM ?: 0.0).coerceAtLeast(0.0)), color = Ink, fontSize = 32.sp, fontWeight = FontWeight.Bold)
+            }
+            Box(
+                modifier = Modifier.height(92.dp).width(180.dp).background(Color(0xFF1A1A1A)).clickable(onClick = actions.onEndGuidance),
+                contentAlignment = Alignment.Center,
+            ) {
+                Text("안내 종료", color = Color.White, fontSize = 26.sp, fontWeight = FontWeight.Bold)
+            }
+        }
+    }
+}
+
+@Composable
+private fun NextTurn(turn: NavMark, state: NavState) {
+    GuidanceTitle(turnArrow(turn.type), "${state.nextTurnDistanceM}m ${turnLabel(turn.type)}", turn.description)
+}
+
+@Composable
+private fun GuidanceTitle(arrow: String, title: String, detail: String?) {
+    Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(20.dp)) {
+        Text(arrow, color = Color.White, fontSize = 64.sp, fontWeight = FontWeight.Bold)
+        Column {
+            Text(title, color = Color.White, fontSize = 40.sp, fontWeight = FontWeight.Bold)
+            detail?.let { Text(it, color = Color(0xFFD0D0D0), fontSize = 24.sp, maxLines = 1, overflow = TextOverflow.Ellipsis) }
+        }
     }
 }

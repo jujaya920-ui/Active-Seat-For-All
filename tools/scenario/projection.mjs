@@ -1,7 +1,10 @@
-// Web Mercator fit of a route into the app's map image space. The scenario builder and the map
+// Web Mercator projection of a route into the app's map pixels. The scenario builder and the map
 // renderer share this, so routePx lands exactly on the rendered map.
-// Portrait to fill the app's map panel. bottomMargin keeps the route above the guidance card.
-export const MAP = { width: 1000, height: 1440, margin: 80, bottomMargin: 480 };
+// Every route uses one scale, like a real navigation map. The margin keeps the map under a panel
+// centred on the car at any point of the route, in any heading.
+export const MAP = { zoom: 15, margin: 900 };
+
+const WORLD_PX = 512 * 2 ** MAP.zoom;
 
 const mercator = ([lon, lat]) => {
   const rad = (lat * Math.PI) / 180;
@@ -13,25 +16,19 @@ const unmercator = ([x, y]) => [
   (Math.atan(Math.sinh(Math.PI * (1 - 2 * y))) * 180) / Math.PI,
 ];
 
-// coordinates: [lon, lat] pairs. Returns the projection and the geographic bounds of the image.
+// coordinates: [lon, lat] pairs. Returns the projection, the map size and the map's centre.
 export function fitRoute(coordinates) {
   const points = coordinates.map(mercator);
-  const xs = points.map((p) => p[0]);
-  const ys = points.map((p) => p[1]);
-  const [minX, maxX, minY, maxY] = [Math.min(...xs), Math.max(...xs), Math.min(...ys), Math.max(...ys)];
-  const scale = Math.min(
-    (MAP.width - 2 * MAP.margin) / (maxX - minX),
-    (MAP.height - MAP.margin - MAP.bottomMargin) / (maxY - minY),
-  );
-  const offsetX = (MAP.width - scale * (maxX - minX)) / 2 - scale * minX;
-  const offsetY = MAP.margin + (MAP.height - MAP.margin - MAP.bottomMargin - scale * (maxY - minY)) / 2 - scale * minY;
+  const xs = points.map((p) => p[0] * WORLD_PX);
+  const ys = points.map((p) => p[1] * WORLD_PX);
+  const originX = Math.floor(Math.min(...xs)) - MAP.margin;
+  const originY = Math.floor(Math.min(...ys)) - MAP.margin;
+  const width = Math.ceil(Math.max(...xs)) + MAP.margin - originX;
+  const height = Math.ceil(Math.max(...ys)) + MAP.margin - originY;
   const toPx = (lonLat) => {
     const [x, y] = mercator(lonLat);
-    return [Math.round(offsetX + scale * x), Math.round(offsetY + scale * y)];
+    return [Math.round(x * WORLD_PX - originX), Math.round(y * WORLD_PX - originY)];
   };
-  const fromPx = ([px, py]) => unmercator([(px - offsetX) / scale, (py - offsetY) / scale]);
-  return {
-    toPx,
-    bounds: { southWest: fromPx([0, MAP.height]), northEast: fromPx([MAP.width, 0]) },
-  };
+  const center = unmercator([(originX + width / 2) / WORLD_PX, (originY + height / 2) / WORLD_PX]);
+  return { toPx, width, height, center };
 }

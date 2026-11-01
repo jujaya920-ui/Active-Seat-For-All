@@ -66,7 +66,7 @@ for (const entry of ROUTES) {
   test(`${entry.id}: stays parseable and adds only demoWindow`, () => {
     const parsed = JSON.parse(formatScenario(scenario));
     assert.deepEqual(Object.keys(parsed).sort(), [
-      'demoWindow', 'frontEvents', 'id', 'mapImage', 'routeLengthM', 'routePx', 'timeline', 'title', 'turns',
+      'demoWindow', 'frontEvents', 'id', 'mapImage', 'mapSize', 'originRoad', 'routeLengthM', 'routePx', 'timeline', 'title', 'turns',
     ]);
     assert.ok(parsed.routePx.every((point) => point.every(Number.isInteger)));
   });
@@ -223,7 +223,7 @@ expectError('an extra timeline key', (s) => { s.timeline[3].gear = 'D'; }, /keys
 expectError('an extra top-level key', (s) => { s.notes = 'x'; }, /top-level keys/);
 expectError('an unknown turn signal', (s) => { s.timeline[3].turnSignal = 'Left'; }, /turnSignal must be/);
 expectError('a too short scenario', (s) => { s.timeline.length = 200; }, /duration/);
-expectError('routePx outside the map', (s) => { s.routePx[1] = [1700, 10]; }, /inside 1000x1440/);
+expectError('routePx outside the map', (s) => { s.routePx[1] = [s.mapSize[0] + 1, 10]; }, /must stay inside/);
 expectError('too many routePx points', (s) => { s.routePx = Array.from({ length: 400 }, (_, i) => [i, i]); }, /routePx has 400/);
 expectError('routePx with no vertex near a turn', (s) => { s.routePx = [s.routePx[0], s.routePx.at(-1)]; }, /no polyline vertex/);
 expectError('a wrong route length', (s) => { s.routeLengthM *= 1.02; }, /differs from routeLengthM/);

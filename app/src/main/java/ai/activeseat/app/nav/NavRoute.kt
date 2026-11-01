@@ -6,7 +6,7 @@ import kotlin.math.hypot
 /** A point of interest on the route. `type` carries NaviHelper's value unchanged. */
 data class NavMark(val atM: Double, val type: String, val description: String)
 
-/** `routePx` is schematic: distance along it is proportional to distance on the road. */
+/** `routePx` is in map pixels: distance along it is proportional to distance on the road. */
 data class NavRoute(
     val title: String,
     val routePx: List<Pair<Int, Int>>,

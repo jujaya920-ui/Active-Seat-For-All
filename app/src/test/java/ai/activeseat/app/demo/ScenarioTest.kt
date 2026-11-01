@@ -8,7 +8,7 @@ private fun row(t: Double, speed: Int, steering: Int, brake: Int, turn: String) 
     """{"t":$t,"speedKph":$speed,"steeringDeg":$steering,"brakePct":$brake,"acceleratorPct":0,"turnSignal":"$turn"}"""
 
 fun scenarioJson(rows: List<String>) = """{
-    "id": "test", "title": "Test", "mapImage": "maps/test.webp",
+    "id": "test", "title": "Test", "mapImage": "maps/test.webp", "mapSize": [2000, 3000],
     "routePx": [[120, 800], [400, 780]], "routeLengthM": 2400,
     "turns": [{ "atM": 500, "type": "TURN_RIGHT", "description": "ramp" }],
     "frontEvents": [{ "atM": 1500, "type": "CONGESTION", "description": "jam" }],

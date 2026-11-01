@@ -34,10 +34,13 @@ class MainActivity : ComponentActivity() {
             AppScreen(
                 ui = ui,
                 player = player,
-                onSelect = viewModel::select,
-                onStart = { viewModel.start() },
-                onStartFull = { viewModel.start(fullRoute = true) },
-                onStop = viewModel::stop,
+                navActions = NavActions(
+                    onOpenFavorites = viewModel::openFavorites,
+                    onGoHome = viewModel::goHome,
+                    onSelect = viewModel::select,
+                    onStart = viewModel::start,
+                    onEndGuidance = viewModel::endGuidance,
+                ),
                 onRequestSpeedPermission = { speedPermission.launch(SPEED_PERMISSION) },
             )
         }

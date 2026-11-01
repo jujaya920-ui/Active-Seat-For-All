@@ -28,6 +28,7 @@ import ai.activeseat.app.vehicle.CarSignalSource
 import ai.activeseat.app.vehicle.SignalSampler
 import ai.activeseat.app.vehicle.VehicleSignal
 import android.app.Application
+import android.graphics.Bitmap
 import android.graphics.BitmapFactory
 import android.os.SystemClock
 import android.util.Log
@@ -45,17 +46,30 @@ import kotlinx.coroutines.launch
 
 private const val TAG = "ActiveSeat"
 
-data class Destination(val id: String, val title: String)
+enum class NavScreen { HOME, FAVORITES, PREVIEW, GUIDING }
+
+/** A favorite on the navigation panel. `demo` is absent when the demo window is the whole route. */
+data class Destination(
+    val id: String,
+    val title: String,
+    val originRoad: String,
+    val full: RouteChoice,
+    val demo: RouteChoice?,
+) {
+    val choices: List<RouteChoice> get() = listOfNotNull(demo, full)
+}
 
 data class UiState(
     val signal: VehicleSignal = VehicleSignal(),
     val speedConnected: Boolean = false,
     val destinations: List<Destination> = emptyList(),
     val selectedScenario: String? = null,
+    val screen: NavScreen = NavScreen.HOME,
+    val originRoad: String = "",
     val playerError: String? = null,
     val predictionStatus: String = "대기 중",
     val route: NavRoute? = null,
-    val map: ImageBitmap? = null,
+    val map: RouteMap? = null,
     val nav: NavState? = null,
     val hardware: HardwareCommand = HardwareCommand(),
 )
@@ -123,14 +137,23 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
         _ui.update { it.copy(speedConnected = source.speedConnected) }
     }
 
+    fun openFavorites() {
+        _ui.update { it.copy(screen = NavScreen.FAVORITES) }
+    }
+
+    fun goHome() {
+        _ui.update { it.copy(screen = NavScreen.HOME) }
+    }
+
+    /** Shows the scenario's route. Its origin becomes the car's position, since each route starts elsewhere. */
     fun select(id: String) {
-        val scenario = loaded[id] ?: return
-        val route = scenario.toNavRoute()
-        val next = RouteNavigator(route)
-        navigator = next
-        _ui.update {
-            it.copy(selectedScenario = id, route = route, map = loadMap(scenario.mapImage), nav = next.state())
-        }
+        place(id)
+        _ui.update { it.copy(screen = NavScreen.PREVIEW) }
+    }
+
+    fun endGuidance() {
+        stop()
+        goHome()
     }
 
     /** Plays the scenario's demo window, or the whole route when `fullRoute` or it has none. */
@@ -140,7 +163,7 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
         val scenario = loaded[id] ?: return
         val window = scenario.demoWindow.takeUnless { fullRoute }
         navigator?.reset(window?.let { scenario.distanceAtM(it.fromSec) } ?: 0.0)
-        _ui.update { it.copy(playerError = null) }
+        _ui.update { it.copy(playerError = null, screen = NavScreen.GUIDING) }
         playJob = viewModelScope.launch(Dispatchers.Default) {
             if (window == null) player.play(scenario) else player.play(scenario, window.fromSec, window.toSec)
         }
@@ -176,14 +199,30 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
         source.stop()
     }
 
+    private fun place(id: String) {
+        val scenario = loaded[id] ?: return
+        val route = scenario.toNavRoute()
+        val next = RouteNavigator(route)
+        navigator = next
+        _ui.update {
+            it.copy(
+                selectedScenario = id,
+                originRoad = scenario.originRoad,
+                route = route,
+                map = loadMap(scenario),
+                nav = next.state(),
+            )
+        }
+    }
+
     private fun loadScenarios() {
         loaded = scenarios.ids().mapNotNull { id ->
             runCatching { id to scenarios.load(id) }
                 .onFailure { Log.e(TAG, "scenario $id failed", it) }
                 .getOrNull()
         }.toMap()
-        _ui.update { state -> state.copy(destinations = demoRoutes().map { Destination(it.id, it.title) }) }
-        demoRoutes().firstOrNull()?.let { select(it.id) }
+        _ui.update { state -> state.copy(destinations = demoRoutes().map { it.toDestination() }) }
+        demoRoutes().firstOrNull()?.let { place(it.id) }
         pendingStart?.let { (id, fullRoute) -> startWhenLoaded(id, fullRoute) }
     }
 
@@ -202,9 +241,29 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
         _ui.update { it.copy(hardware = hardware) }
     }
 
-    // The map source is not settled yet, so a missing image is normal: NavPanel draws a schematic.
-    private fun loadMap(path: String): ImageBitmap? = runCatching {
-        getApplication<Application>().assets.open(path).use { BitmapFactory.decodeStream(it).asImageBitmap() }
+    private fun Scenario.toDestination(): Destination {
+        val window = demoWindow?.takeIf { it.fromSec > 0 || it.toSec < durationSec }
+        return Destination(
+            id = id,
+            title = title,
+            originRoad = originRoad,
+            full = RouteChoice(if (window == null) "추천" else "전체 경로", durationSec, routeLengthM, fullRoute = window != null),
+            demo = window?.let {
+                RouteChoice("시연 구간", it.toSec - it.fromSec, distanceAtM(it.toSec) - distanceAtM(it.fromSec), fullRoute = false)
+            },
+        )
+    }
+
+    private fun loadMap(scenario: Scenario): RouteMap {
+        val tileDir = scenario.mapImage.removeSuffix(".webp")
+        val (width, height) = scenario.mapSize
+        return RouteMap(width, height, decodeAsset(scenario.mapImage)) { decodeAsset("$tileDir/${it.col}_${it.row}.webp") }
+    }
+
+    // A missing file is normal: tiles exist only near the route, and test scenarios have no map.
+    private fun decodeAsset(path: String): ImageBitmap? = runCatching {
+        val options = BitmapFactory.Options().apply { inPreferredConfig = Bitmap.Config.RGB_565 }
+        getApplication<Application>().assets.open(path).use { BitmapFactory.decodeStream(it, null, options)!!.asImageBitmap() }
     }.getOrNull()
 
     private fun describe(result: PredictResult?): String = when (result) {
