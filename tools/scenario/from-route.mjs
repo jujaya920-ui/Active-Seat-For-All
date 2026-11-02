@@ -7,7 +7,7 @@
 import { mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { LABEL, LIMITS, STEP_S, VEHICLE, accelerations, detectManeuvers, kphToMps, polylineLength } from './common.mjs';
+import { LABEL, LIMITS, STEP_S, VEHICLE, accelerations, curvature as curvatureOf, detectManeuvers, kphToMps, polylineLength } from './common.mjs';
 import { fitRoute } from './projection.mjs';
 import { formatReport, validateScenario } from './validate.mjs';
 
@@ -37,6 +37,30 @@ export const DRIVER = {
   centringM: 5, // steering eases to zero over this distance at both route ends
   steeringRateDegS: LIMITS.maxSteeringRateDegS * 0.95, // margin for rounding
   holdS: 2, // stopped at origin and at destination
+};
+
+// How the driver holds the wheel around the ideal steering. Generic, set before any prediction run.
+export const HANDS = {
+  // Each corner is wound in by a slightly wrong amount, which the driver then notices and fixes.
+  cornerFromDeg: LABEL.lateralDeg,
+  minGain: 0.92,
+  maxGain: 1.08,
+  disturbanceTauS: 3, // road camber and wind, a slowly wandering curvature
+  disturbancePerM: 0.0005, // its standard deviation, about 1 degree at the wheel
+  checkMinS: 0.6, // the driver judges the lane position this often
+  checkMaxS: 1.4,
+  offsetDeadbandM: 0.2,
+  headingDeadbandDeg: 1.5,
+  previewS: 2, // a correction aims to be back on the line this far ahead
+  minPreviewM: 8,
+  // Off a corner the correction stays under the 15 degree label threshold, so it is never a corner
+  // itself. In a corner it may grow with the steering, enough to undo a wrong gain.
+  maxCorrectionDeg: 10,
+  maxCorrectionShare: 0.15,
+  correctionLateralMps2: 0.5, // and it stays a nudge, so it shrinks with speed
+  correctionRateDegS: 20, // a small correction takes a few tenths of a second
+  marginDeg: 0.5, // keeps rounding to 0.1 degree off the label threshold
+  minSpeedMps: 1, // no correcting while stopped; the correction is let go instead
 };
 
 export const SIGNAL = {
@@ -482,13 +506,80 @@ function signalAt(spans, s) {
   return 'Off';
 }
 
-function buildTimeline({ fineSpeed, steeringByCell, spans }, driver = DRIVER) {
+const gaussianSample = (random) => Math.sqrt(-2 * Math.log(1 - random())) * Math.cos(2 * Math.PI * random());
+
+// The driver steers like a person rather than tracing the ideal steering: each corner is wound
+// in by a slightly wrong amount, a wandering disturbance pushes the car off the line, and every
+// so often the driver judges the offset and heading against the ideal path and steers back.
+// Position along the route still comes from speed alone, so none of this moves the car on the map.
+export function holdWheel({ fineSpeed, steeringByCell, random }, driver = DRIVER, hands = HANDS) {
+  const wheels = new Float64Array(fineSpeed.length);
+  const lastCell = steeringByCell.length - 1;
+  const maxDelta = driver.steeringRateDegS * FINE_DT_S;
+  const correctionDelta = hands.correctionRateDegS * FINE_DT_S;
+  const disturbanceStep = hands.disturbancePerM * Math.sqrt((2 * FINE_DT_S) / hands.disturbanceTauS);
+  const headingDeadband = hands.headingDeadbandDeg * RAD;
+  let travelled = 0;
+  let gain = 1;
+  let cornering = false;
+  let correction = 0;
+  let correctionTarget = 0;
+  let wheel = 0;
+  let offsetM = 0; // left of the ideal path is positive
+  let headingRad = 0; // relative to the ideal path, left positive
+  let disturbance = 0;
+  let nextCheckS = uniform(random, hands.checkMinS, hands.checkMaxS);
+  for (let k = 0; k < fineSpeed.length; k++) {
+    if (k > 0) travelled += ((fineSpeed[k - 1] + fineSpeed[k]) / 2) * FINE_DT_S;
+    const speed = fineSpeed[k];
+    const position = Math.min(travelled / driver.gridM, lastCell);
+    const low = Math.floor(position);
+    const high = Math.min(low + 1, lastCell);
+    const ideal = steeringByCell[low] + (steeringByCell[high] - steeringByCell[low]) * (position - low);
+    const enters = Math.abs(ideal) >= hands.cornerFromDeg;
+    if (enters && !cornering) gain = uniform(random, hands.minGain, hands.maxGain);
+    cornering = enters;
+    const nudge = steeringDegFor(hands.correctionLateralMps2 / Math.max(speed, 1) ** 2);
+    const limit = Math.min(Math.max(hands.maxCorrectionDeg, hands.maxCorrectionShare * Math.abs(ideal)), nudge);
+
+    const t = k * FINE_DT_S;
+    if (t >= nextCheckS) {
+      nextCheckS = t + uniform(random, hands.checkMinS, hands.checkMaxS);
+      const off = Math.abs(offsetM) > hands.offsetDeadbandM || Math.abs(headingRad) > headingDeadband;
+      if (speed > hands.minSpeedMps && off) {
+        const previewM = Math.max(speed * hands.previewS, hands.minPreviewM);
+        // The road's curvature plus what closes offset and heading over the preview, a critically
+        // damped path back to the line.
+        const back = curvatureOf(ideal) - (2 * offsetM) / previewM ** 2 - (2 * headingRad) / previewM;
+        correctionTarget = steeringDegFor(back) - ideal * gain;
+      } else {
+        correctionTarget = 0;
+      }
+    }
+    if (speed <= hands.minSpeedMps) correctionTarget = 0;
+    correction = clamp(correctionTarget, correction - correctionDelta, correction + correctionDelta);
+    correction = clamp(correction, -limit, limit);
+    // A correction never makes or breaks a corner: the wheel stays on the ideal's side of the
+    // label threshold, so corners and labels are the road's, not the driver's.
+    const edge = hands.cornerFromDeg;
+    let wanted = ideal * gain + correction;
+    if (Math.abs(ideal) < edge) wanted = clamp(wanted, hands.marginDeg - edge, edge - hands.marginDeg);
+    else wanted = Math.sign(ideal) * Math.max(Math.sign(ideal) * wanted, edge + hands.marginDeg);
+    wheel = clamp(wanted, wheel - maxDelta, wheel + maxDelta);
+    wheel = clamp(wheel, -LIMITS.maxSteeringDeg, LIMITS.maxSteeringDeg);
+    wheels[k] = wheel;
+
+    disturbance += -disturbance * (FINE_DT_S / hands.disturbanceTauS) + disturbanceStep * gaussianSample(random);
+    headingRad += speed * (curvatureOf(wheel) + disturbance - curvatureOf(ideal)) * FINE_DT_S;
+    offsetM += speed * Math.sin(headingRad) * FINE_DT_S;
+  }
+  return wheels;
+}
+
+function buildTimeline({ fineSpeed, wheels, spans }) {
   const everyFine = Math.round(STEP_S / FINE_DT_S);
   const rows = [];
   let travelled = 0;
-  let wheel = 0;
-  const maxDelta = driver.steeringRateDegS * STEP_S;
-  const lastCell = steeringByCell.length - 1;
   const rowCount = Math.floor((fineSpeed.length - 1) / everyFine) + 1;
   for (let row = 0; row < rowCount; row++) {
     const k = row * everyFine;
@@ -496,11 +587,7 @@ function buildTimeline({ fineSpeed, steeringByCell, spans }, driver = DRIVER) {
       // Trapezoid over the fine samples of this row.
       for (let j = k - everyFine; j < k; j++) travelled += ((fineSpeed[j] + fineSpeed[j + 1]) / 2) * FINE_DT_S;
     }
-    const position = Math.min(travelled / driver.gridM, lastCell);
-    const low = Math.floor(position);
-    const high = Math.min(low + 1, lastCell);
-    const wanted = steeringByCell[low] + (steeringByCell[high] - steeringByCell[low]) * (position - low);
-    wheel = clamp(wanted, wheel - maxDelta, wheel + maxDelta);
+    const wheel = wheels[k];
     const speed = fineSpeed[k];
     const nextK = k + everyFine;
     const accel = nextK < fineSpeed.length ? (fineSpeed[nextK] - speed) / STEP_S : 0;
@@ -656,7 +743,8 @@ export function buildScenario({ id, title }, osrm) {
   const profile = speedProfile({ cells, baseMps, curvature, stops, slowdowns, launchM });
   const fineSpeed = speedOverTime(profile);
   const spans = signalSpans(route.steps, steeringByCell);
-  const timeline = buildTimeline({ fineSpeed, steeringByCell, spans });
+  const wheels = holdWheel({ fineSpeed, steeringByCell, random: seededRandom(`${id}:steering`) });
+  const timeline = buildTimeline({ fineSpeed, wheels, spans });
 
   return {
     id,

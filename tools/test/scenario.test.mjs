@@ -5,6 +5,7 @@ import { LABEL, STEP_S, TURN_TYPES, accelerations, detectManeuvers, distances } 
 import {
   DEMO,
   DRIVER,
+  HANDS,
   ROUTES,
   SHORT,
   STOPS,
@@ -12,12 +13,14 @@ import {
   chooseDemoWindow,
   formatScenario,
   generate,
+  holdWheel,
   outputPath,
   parseRoute,
   placeSlowdowns,
   placeStops,
   routePath,
   seededRandom,
+  steeringDegFor,
   turnType,
 } from '../scenario/from-route.mjs';
 import { deriveLabels, labelSpans, lateralLabel, longitudinalLabel } from '../scenario/labels.mjs';
@@ -128,6 +131,34 @@ for (const entry of ROUTES) {
     });
   }
 }
+
+// 60 s at a steady speed over a straight road, 0.02 s samples.
+const steadyDrive = (speedMps) => new Float64Array(3000).fill(speedMps);
+const straightRoad = (speedMps) => new Array(Math.ceil(60 * speedMps) + 1).fill(0);
+
+test('on a straight road the driver nudges the wheel, gentler at speed', () => {
+  for (const speedMps of [8, 14, 25]) {
+    const wheels = holdWheel({ fineSpeed: steadyDrive(speedMps), steeringByCell: straightRoad(speedMps), random: seededRandom('straight') });
+    const peak = Math.max(...wheels.map(Math.abs));
+    const nudge = steeringDegFor(HANDS.correctionLateralMps2 / speedMps ** 2);
+    assert.ok(peak > 0.5, `${speedMps} m/s: the wheel never moves`);
+    assert.ok(peak <= Math.min(HANDS.maxCorrectionDeg, nudge) + 1e-9, `${speedMps} m/s: ${peak} degrees`);
+  }
+});
+
+test('a correction never makes or breaks a corner', () => {
+  const speedMps = 6;
+  const road = straightRoad(speedMps).map((_, cell) => 200 * Math.exp(-0.5 * ((cell - 180) / 12) ** 2));
+  const wheels = holdWheel({ fineSpeed: steadyDrive(speedMps), steeringByCell: road, random: seededRandom('corner') });
+  let differs = false;
+  wheels.forEach((wheel, k) => {
+    const ideal = road[Math.min(Math.round((k * 0.02 * speedMps) / DRIVER.gridM), road.length - 1)];
+    if (Math.abs(wheel - ideal) > 1) differs = true;
+    if (Math.abs(ideal) < LABEL.lateralDeg - 1) assert.ok(Math.abs(wheel) < LABEL.lateralDeg, `k=${k}: ${wheel}`);
+    if (Math.abs(ideal) > LABEL.lateralDeg + 1) assert.ok(wheel > LABEL.lateralDeg, `k=${k}: ${wheel}`);
+  });
+  assert.ok(differs, 'the wheel traces the ideal steering exactly');
+});
 
 test('routePx starts and ends on the route ends', () => {
   const entry = ROUTES.find(({ id }) => id === 'pangyo-dongpangyo');
