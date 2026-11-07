@@ -41,6 +41,13 @@ class MainActivity : ComponentActivity() {
                     onStart = viewModel::start,
                     onEndGuidance = viewModel::endGuidance,
                 ),
+                settingsActions = SettingsActions(
+                    onClose = viewModel::closeSettings,
+                    onChange = viewModel::updateSettings,
+                    onReset = viewModel::resetSettings,
+                    onPreview = viewModel::startPreview,
+                ),
+                onToggleSettings = viewModel::toggleSettings,
                 onRequestSpeedPermission = { speedPermission.launch(SPEED_PERMISSION) },
             )
         }

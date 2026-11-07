@@ -11,6 +11,8 @@ import android.graphics.Path
 import android.graphics.RectF
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
+import androidx.compose.foundation.border
+import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -21,7 +23,9 @@ import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.selection.toggleable
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
@@ -37,11 +41,15 @@ import androidx.compose.ui.draw.drawBehind
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.StrokeCap
 import androidx.compose.ui.graphics.drawscope.DrawScope
 import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.graphics.drawscope.drawIntoCanvas
 import androidx.compose.ui.graphics.nativeCanvas
 import androidx.compose.ui.graphics.toArgb
+import androidx.compose.ui.semantics.Role
+import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
@@ -56,33 +64,28 @@ import kotlin.math.pow
 import kotlin.math.roundToInt
 import kotlin.math.sin
 
-
-private val PanelColor = Color(0xFF05080F)
-private val TextBright = Color(0xFFCFE6F7)
-private val TextDim = Color(0xFFA9CDE6)
-private val Amber = Color(0xFFFFC247)
-private val BracketColor = Color(0x803AA0FF)
-private val BarTrack = Color(0xFF12283A)
-private val Grid = Color(0x123AA0FF)
-private val Ink = Color(0xFF8FD0FF)
-private val Glow = Color(0x293AA0FF)
-private val GaugeDim = Color(0x477FE7FF)
-private val GaugeRest = Color(0x577FE7FF)
-private val GaugeLit = Color(0xFFD6F7FF)
-private val GaugeArc = Color(0xFFBFF3FF)
-private val GaugePointer = Color(0xFFEFFFFF)
-private val GaugeIdle = Color(0x997FE7FF)
-private val WatchRing = Color(0xFFFFB454)
-private val WatchInk = Color(0xFF6FC0FF)
-
-private val BracketLength = 20.dp
-private val BracketStroke = 1.dp
-
+/**
+ * [restKey] changes when the seat must snap back to rest at once, such as when a preview stops.
+ * [hintsOff] shows that neither the seat nor the watch is controlled.
+ */
 @Composable
-fun HardwarePanel(command: HardwareCommand, forecast: Hint, probabilities: MotionProbabilities, modifier: Modifier) {
+fun HardwarePanel(
+    command: HardwareCommand,
+    forecast: Hint,
+    probabilities: MotionProbabilities,
+    settingsOpen: Boolean,
+    onToggleSettings: () -> Unit,
+    hintsOff: Boolean,
+    restKey: Int,
+    modifier: Modifier,
+) {
     val motion = remember { SeatMotion() }
     val frame = remember { mutableLongStateOf(0L) }
     val latest = rememberUpdatedState(command)
+    LaunchedEffect(restKey) {
+        motion.reset()
+        frame.longValue++
+    }
     LaunchedEffect(Unit) {
         var lastNs = 0L
         while (true) {
@@ -99,7 +102,7 @@ fun HardwarePanel(command: HardwareCommand, forecast: Hint, probabilities: Motio
         modifier = modifier.background(PanelColor).padding(horizontal = 12.dp, vertical = 16.dp),
         verticalArrangement = Arrangement.spacedBy(12.dp),
     ) {
-        ForecastTitle(forecast)
+        ForecastTitle(forecast, hintsOff, settingsOpen, onToggleSettings)
         Row(Modifier.weight(1f).fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
             SeatView(front, motion, frame)
             SeatView(side, motion, frame)
@@ -112,23 +115,56 @@ fun HardwarePanel(command: HardwareCommand, forecast: Hint, probabilities: Motio
 }
 
 @Composable
-private fun ForecastTitle(forecast: Hint) {
+private fun ForecastTitle(forecast: Hint, hintsOff: Boolean, settingsOpen: Boolean, onToggleSettings: () -> Unit) {
+    Box(Modifier.fillMaxWidth().height(132.dp).drawBehind { drawBrackets() }) {
+        Box(Modifier.matchParentSize().padding(top = 10.dp, bottom = 24.dp), contentAlignment = Alignment.Center) {
+            Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                Text("차량 움직임 예측", color = TextDim, fontSize = 21.sp, maxLines = 1)
+                Row(horizontalArrangement = Arrangement.spacedBy(22.dp)) {
+                    Text(
+                        if (hintsOff) "힌트 꺼짐" else forecastText(forecast),
+                        color = if (!hintsOff && isForecastActive(forecast)) Amber else TextBright,
+                        fontSize = 40.sp,
+                        fontWeight = FontWeight.Bold,
+                        maxLines = 1,
+                        modifier = Modifier.alignByBaseline(),
+                    )
+                    Text("강도 ${strengthPercent(forecast)}", color = TextBright, fontSize = 28.sp, maxLines = 1, modifier = Modifier.alignByBaseline())
+                }
+            }
+        }
+        SettingsButton(settingsOpen, onToggleSettings, Modifier.align(Alignment.TopEnd).padding(top = 27.dp, end = 16.dp))
+    }
+}
+
+/** Opens and closes the settings panel; filled amber while it is open. */
+@Composable
+private fun SettingsButton(open: Boolean, onToggle: () -> Unit, modifier: Modifier) {
+    val ink = if (open) PanelColor else TextBright
+    val knob = if (open) Amber else PanelColor
     Box(
-        modifier = Modifier.fillMaxWidth().height(132.dp).drawBehind { drawBrackets() }.padding(top = 10.dp, bottom = 24.dp),
+        modifier = modifier
+            .size(64.dp)
+            .background(if (open) Amber else Color.Transparent)
+            .border(1.dp, if (open) Amber else BracketColor)
+            .toggleable(
+                value = open,
+                interactionSource = remember { MutableInteractionSource() },
+                indication = null,
+                role = Role.Button,
+                onValueChange = { onToggle() },
+            )
+            .semantics { contentDescription = "설정" },
         contentAlignment = Alignment.Center,
     ) {
-        Column(horizontalAlignment = Alignment.CenterHorizontally) {
-            Text("차량 움직임 예측", color = TextDim, fontSize = 21.sp, maxLines = 1)
-            Row(horizontalArrangement = Arrangement.spacedBy(22.dp)) {
-                Text(
-                    forecastText(forecast),
-                    color = if (isForecastActive(forecast)) Amber else TextBright,
-                    fontSize = 40.sp,
-                    fontWeight = FontWeight.Bold,
-                    maxLines = 1,
-                    modifier = Modifier.alignByBaseline(),
-                )
-                Text("강도 ${strengthPercent(forecast)}", color = TextBright, fontSize = 28.sp, maxLines = 1, modifier = Modifier.alignByBaseline())
+        Canvas(Modifier.size(32.dp)) {
+            val u = size.width / 24f
+            val stroke = 1.6f * u
+            drawLine(ink, Offset(4 * u, 7 * u), Offset(20 * u, 7 * u), stroke, StrokeCap.Round)
+            drawLine(ink, Offset(4 * u, 17 * u), Offset(20 * u, 17 * u), stroke, StrokeCap.Round)
+            for (center in listOf(Offset(9 * u, 7 * u), Offset(15 * u, 17 * u))) {
+                drawCircle(knob, 2.4f * u, center)
+                drawCircle(ink, 2.4f * u, center, style = Stroke(stroke))
             }
         }
     }
@@ -200,18 +236,6 @@ private fun WatchView(motion: SeatMotion, frame: LongState, forecast: Hint, modi
             maxLines = 1,
         )
     }
-}
-
-private fun DrawScope.drawBrackets() {
-    val length = BracketLength.toPx()
-    val stroke = BracketStroke.toPx()
-    val w = size.width
-    val h = size.height
-    listOf(Offset(0f, 0f) to Offset(1f, 1f), Offset(w, 0f) to Offset(-1f, 1f), Offset(0f, h) to Offset(1f, -1f), Offset(w, h) to Offset(-1f, -1f))
-        .forEach { (corner, inward) ->
-            drawLine(BracketColor, corner, Offset(corner.x + inward.x * length, corner.y), stroke)
-            drawLine(BracketColor, corner, Offset(corner.x, corner.y + inward.y * length), stroke)
-        }
 }
 
 private fun DrawScope.drawGrid() {

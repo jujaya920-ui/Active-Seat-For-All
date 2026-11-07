@@ -24,14 +24,30 @@ fun AppScreen(
     ui: UiState,
     player: PlayerState,
     navActions: NavActions,
+    settingsActions: SettingsActions,
+    onToggleSettings: () -> Unit,
     onRequestSpeedPermission: () -> Unit,
 ) {
     MaterialTheme(colorScheme = darkColorScheme()) {
         Surface(modifier = Modifier.fillMaxSize()) {
             Row(modifier = Modifier.fillMaxSize()) {
-                NavPanel(ui, navActions, Modifier.weight(1f).fillMaxHeight())
+                // Settings cover the map, so the seat stays in view while a preview plays.
+                if (ui.settingsOpen) {
+                    SettingsPanel(ui.settings, ui.previewLabel, ui.hintsOff, settingsActions, Modifier.weight(1f).fillMaxHeight())
+                } else {
+                    NavPanel(ui, navActions, Modifier.weight(1f).fillMaxHeight())
+                }
                 Column(modifier = Modifier.weight(1f).fillMaxHeight()) {
-                    HardwarePanel(ui.hardware, ui.forecast, ui.probabilities, Modifier.weight(1f).fillMaxWidth())
+                    HardwarePanel(
+                        command = ui.hardware,
+                        forecast = ui.forecast,
+                        probabilities = ui.probabilities,
+                        settingsOpen = ui.settingsOpen,
+                        onToggleSettings = onToggleSettings,
+                        hintsOff = ui.hintsOff,
+                        restKey = ui.restKey,
+                        modifier = Modifier.weight(1f).fillMaxWidth(),
+                    )
                     ControlBar(ui, player, onRequestSpeedPermission)
                 }
             }

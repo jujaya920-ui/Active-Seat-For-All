@@ -47,4 +47,21 @@ class HardwareDisplayTest {
         assertEquals("88%", percentText(0.876))
         assertEquals("0%", percentText(0.0))
     }
+
+    @Test
+    fun `setting levels read as off or their number`() {
+        assertEquals("끔", levelText(0))
+        assertEquals("1", levelText(1))
+        assertEquals("5", levelText(5))
+    }
+
+    @Test
+    fun `a touch on the slider snaps to the nearest level`() {
+        assertEquals(0, nearestLevel(0.09f, 5))
+        assertEquals(1, nearestLevel(0.11f, 5))
+        assertEquals(3, nearestLevel(0.6f, 5))
+        assertEquals(5, nearestLevel(1f, 5))
+        assertEquals(0, nearestLevel(-0.4f, 5))
+        assertEquals(5, nearestLevel(1.3f, 5))
+    }
 }

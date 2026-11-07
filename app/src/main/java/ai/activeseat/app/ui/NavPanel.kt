@@ -68,7 +68,7 @@ private const val CAR_GLIDE_MS = 200
 // A bend in the polyline turns the map over this long instead of snapping it.
 private const val MAP_TURN_MS = 700
 
-private val Ink = Color(0xFF111111)
+private val NavInk = Color(0xFF111111)
 private val SubInk = Color(0xFF6B7280)
 private val Line = Color(0xFFD5D9E0)
 private val Disabled = Color(0xFFB0B0B0)
@@ -232,7 +232,7 @@ private fun HomeOverlay(ui: UiState, actions: NavActions) {
         if (ui.originRoad.isNotEmpty() && ui.nav?.progressM == 0.0) {
             Text(
                 ui.originRoad,
-                color = Ink,
+                color = NavInk,
                 fontSize = 24.sp,
                 fontWeight = FontWeight.Medium,
                 modifier = Modifier
@@ -296,7 +296,7 @@ private fun FavoritesOverlay(ui: UiState, actions: NavActions) {
         HorizontalRule()
         DisabledPlaceRow("회사를 등록해 주세요") { BuildingIcon(Disabled, 28.dp) }
         Box(modifier = Modifier.fillMaxWidth().height(8.dp).background(Divider))
-        Text("장소", color = Ink, fontSize = 24.sp, fontWeight = FontWeight.Bold, modifier = Modifier.padding(start = 24.dp, top = 22.dp, bottom = 8.dp))
+        Text("장소", color = NavInk, fontSize = 24.sp, fontWeight = FontWeight.Bold, modifier = Modifier.padding(start = 24.dp, top = 22.dp, bottom = 8.dp))
         Column(modifier = Modifier.weight(1f).verticalScroll(rememberScrollState())) {
             if (ui.destinations.isEmpty()) {
                 Text("등록된 장소가 없습니다", color = SubInk, fontSize = 22.sp, modifier = Modifier.padding(24.dp))
@@ -314,7 +314,7 @@ private fun HeaderRow(title: String, onClose: () -> Unit) {
     Row(modifier = Modifier.fillMaxWidth().height(88.dp), verticalAlignment = Alignment.CenterVertically) {
         Text(
             title,
-            color = Ink,
+            color = NavInk,
             fontSize = 28.sp,
             fontWeight = FontWeight.Bold,
             maxLines = 1,
@@ -323,7 +323,7 @@ private fun HeaderRow(title: String, onClose: () -> Unit) {
         )
         Box(modifier = Modifier.width(1.dp).fillMaxHeight().background(Line))
         Box(modifier = Modifier.size(88.dp).clickable(onClick = onClose), contentAlignment = Alignment.Center) {
-            Icon(Icons.Filled.Close, "닫기", tint = Ink, modifier = Modifier.size(36.dp))
+            Icon(Icons.Filled.Close, "닫기", tint = NavInk, modifier = Modifier.size(36.dp))
         }
     }
     HorizontalRule()
@@ -355,7 +355,7 @@ private fun PlaceRow(destination: Destination, onClick: () -> Unit) {
     ) {
         Icon(Icons.Filled.Place, null, tint = Color.Black, modifier = Modifier.size(38.dp))
         Column {
-            Text(destination.title, color = Ink, fontSize = 24.sp, fontWeight = FontWeight.Bold, maxLines = 1, overflow = TextOverflow.Ellipsis)
+            Text(destination.title, color = NavInk, fontSize = 24.sp, fontWeight = FontWeight.Bold, maxLines = 1, overflow = TextOverflow.Ellipsis)
             Text(
                 "${formatDistance(destination.full.lengthM)} · ${destination.originRoad} 출발",
                 color = SubInk,
@@ -394,7 +394,7 @@ private fun PreviewOverlay(ui: UiState, actions: NavActions, modifier: Modifier)
 
 @Composable
 private fun RouteChoiceRow(number: Int, choice: RouteChoice, selected: Boolean, onClick: () -> Unit) {
-    val ink = if (selected) Ink else SubInk
+    val ink = if (selected) NavInk else SubInk
     Row(
         modifier = Modifier
             .fillMaxWidth()
@@ -442,7 +442,7 @@ private fun GuidingOverlay(state: NavState?, actions: NavActions) {
         ) {
             Column(modifier = Modifier.weight(1f).padding(horizontal = 24.dp, vertical = 14.dp)) {
                 Text("남은 거리", color = SubInk, fontSize = 20.sp)
-                Text(formatDistance((state?.remainingM ?: 0.0).coerceAtLeast(0.0)), color = Ink, fontSize = 32.sp, fontWeight = FontWeight.Bold)
+                Text(formatDistance((state?.remainingM ?: 0.0).coerceAtLeast(0.0)), color = NavInk, fontSize = 32.sp, fontWeight = FontWeight.Bold)
             }
             Box(
                 modifier = Modifier.height(92.dp).width(180.dp).background(Color(0xFF1A1A1A)).clickable(onClick = actions.onEndGuidance),

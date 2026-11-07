@@ -34,6 +34,10 @@ const val SEAT_VIEW_H = 532f
 
 private const val TAU = (2 * PI).toFloat()
 private const val MOTION_TAU_SEC = 0.18f
+
+/** Four equal first-order stages in a row reach 95% at this many of their time constants. */
+private const val LEAN_STAGE_RATE = 7.754f
+private const val LEAN_STAGES = 4
 private const val WAVE_SLOWEST_SEC = 2.6f
 private const val WAVE_STRENGTH_SPEEDUP_SEC = 0.9f
 private const val SETTLED = 0.002f
@@ -280,7 +284,11 @@ fun swell(strength: Float, phase: Float, reach: Float): Float {
     return s * s
 }
 
-/** Eases the panel toward the latest command and runs the vibration swells. */
+/**
+ * Eases the panel toward the latest command and runs the vibration swells. The pose follows the
+ * command through four first-order stages, so it starts very slowly, runs fast in the middle and
+ * settles very slowly, reaching 95% at [HardwareCommand.leanSec]. Vibration and the watch ease as before.
+ */
 class SeatMotion {
     var rollDeg = 0f
         private set
@@ -297,19 +305,45 @@ class SeatMotion {
     val vibration = Array(3) { FloatArray(4) }
     val phase = Array(3) { FloatArray(4) }
 
+    // Roll, pitch and yaw, each through LEAN_STAGES stages; the last stage is the pose.
+    private val stages = Array(3) { FloatArray(LEAN_STAGES) }
+
+    /** Puts the seat, vibration and watch back at rest at once. */
+    fun reset() {
+        rollDeg = 0f
+        pitchDeg = 0f
+        yawDeg = 0f
+        watch = 0f
+        stages.forEach { it.fill(0f) }
+        vibration.forEach { it.fill(0f) }
+        phase.forEach { it.fill(0f) }
+    }
+
     /** Returns whether anything on screen changed. */
     fun step(dtSec: Float, command: HardwareCommand): Boolean {
         val a = 1 - exp(-dtSec / MOTION_TAU_SEC)
+        // Exact per stage, so a long frame cannot overshoot. A zero time snaps.
+        val leanSec = command.leanSec.toFloat()
+        val aLean = if (leanSec > 0f) 1 - exp(-dtSec * LEAN_STAGE_RATE / leanSec) else 1f
         timeSec += dtSec
         var moving = false
         fun ease(current: Float, target: Float): Float {
             if (abs(target - current) > SETTLED) moving = true
             return current + (target - current) * a
         }
+        fun lean(chain: FloatArray, target: Float): Float {
+            var input = target
+            for (i in chain.indices) {
+                if (abs(input - chain[i]) > SETTLED) moving = true
+                chain[i] += (input - chain[i]) * aLean
+                input = chain[i]
+            }
+            return input
+        }
         val pose = command.headrest
-        rollDeg = ease(rollDeg, pose.rollDeg.toFloat())
-        pitchDeg = ease(pitchDeg, pose.pitchDeg.toFloat())
-        yawDeg = ease(yawDeg, pose.yawDeg.toFloat())
+        rollDeg = lean(stages[0], pose.rollDeg.toFloat())
+        pitchDeg = lean(stages[1], pose.pitchDeg.toFloat())
+        yawDeg = lean(stages[2], pose.yawDeg.toFloat())
         watch = ease(watch, command.watchStrength.toFloat())
         listOf(command.cushion, command.backrest, command.headrest).forEachIndexed { part, module ->
             val targets = zoneTargets(module)

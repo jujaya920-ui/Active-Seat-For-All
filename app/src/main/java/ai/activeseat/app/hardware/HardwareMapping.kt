@@ -42,3 +42,36 @@ fun Hint.toHardwareCommand(): HardwareCommand {
         watchStrength = max(lateralStrength, longitudinalStrength),
     )
 }
+
+/**
+ * The seat and the watch each follow their own engine's hint, shaped by the passenger's settings.
+ * A device turned off rests. Lean speed off keeps the seat upright but leaves its vibration on.
+ */
+fun toHardwareCommand(seat: Hint, watch: Hint, settings: HardwareSettings): HardwareCommand {
+    val base = (if (settings.seatOn) seat else Hint()).toHardwareCommand()
+    val seatScale = HardwareSettings.vibrationScale(settings.seatVibration)
+    val leanSec = HardwareSettings.leanSeconds(settings.leanSpeed)
+    fun ModuleCommand.shaped() = ModuleCommand(
+        vibration = Vibration(
+            left = this.vibration.left * seatScale,
+            right = this.vibration.right * seatScale,
+            front = this.vibration.front * seatScale,
+            back = this.vibration.back * seatScale,
+        ),
+        rollDeg = if (leanSec == null) 0.0 else rollDeg,
+        pitchDeg = if (leanSec == null) 0.0 else pitchDeg,
+        yawDeg = if (leanSec == null) 0.0 else yawDeg,
+    )
+    val watchStrength = if (settings.watchOn) {
+        max(watch.lateralStrength, watch.longitudinalStrength) * HardwareSettings.vibrationScale(settings.watchVibration)
+    } else {
+        0.0
+    }
+    return HardwareCommand(
+        headrest = base.headrest.shaped(),
+        backrest = base.backrest.shaped(),
+        cushion = base.cushion.shaped(),
+        watchStrength = watchStrength,
+        leanSec = leanSec ?: HardwareCommand.DEFAULT_LEAN_SEC,
+    )
+}

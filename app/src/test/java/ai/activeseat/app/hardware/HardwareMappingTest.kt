@@ -58,4 +58,61 @@ class HardwareMappingTest {
         assertEquals(0.75, Hint(LateralCue.RIGHT, 0.25, LongitudinalCue.BRAKE, 0.75).toHardwareCommand().watchStrength, 1e-9)
         assertEquals(0.75, Hint(LateralCue.LEFT, 0.75, LongitudinalCue.ACCELERATE, 0.25).toHardwareCommand().watchStrength, 1e-9)
     }
+
+    private val defaults = HardwareSettings()
+
+    @Test fun defaultSettingsScaleVibrationToThreeFifths() {
+        val left = Hint(lateral = LateralCue.LEFT, lateralStrength = 1.0)
+        val command = toHardwareCommand(left, left, defaults)
+        for (module in listOf(command.headrest, command.backrest, command.cushion)) {
+            assertModule(Vibration(left = 0.6), 3.0, 0.0, 6.0, module)
+        }
+        assertEquals(0.6, command.watchStrength, 1e-9)
+        assertEquals(2.0, command.leanSec, 1e-9)
+    }
+
+    @Test fun seatVibrationScalesEveryZoneButNotTheLean() {
+        val hint = Hint(LateralCue.RIGHT, 0.5, LongitudinalCue.BRAKE, 1.0)
+        val command = toHardwareCommand(hint, Hint(), defaults.copy(seatVibration = 5))
+        assertModule(Vibration(right = 0.5, back = 1.0), -1.5, -2.0, -3.0, command.cushion)
+        val quiet = toHardwareCommand(hint, Hint(), defaults.copy(seatVibration = 0))
+        assertModule(Vibration(), -1.5, -2.0, -3.0, quiet.cushion)
+    }
+
+    @Test fun leanOffKeepsTheSeatUprightButVibrating() {
+        val hint = Hint(LateralCue.LEFT, 1.0, LongitudinalCue.ACCELERATE, 1.0)
+        val command = toHardwareCommand(hint, Hint(), defaults.copy(seatVibration = 5, leanSpeed = 0))
+        assertModule(Vibration(left = 1.0), 0.0, 0.0, 0.0, command.headrest)
+        assertModule(Vibration(left = 1.0, front = 1.0), 0.0, 0.0, 0.0, command.cushion)
+        assertEquals(HardwareCommand.DEFAULT_LEAN_SEC, command.leanSec, 1e-9)
+    }
+
+    @Test fun leanSpeedSetsLeanSec() {
+        assertEquals(8.0, toHardwareCommand(Hint(), Hint(), defaults.copy(leanSpeed = 1)).leanSec, 1e-9)
+        assertEquals(0.5, toHardwareCommand(Hint(), Hint(), defaults.copy(leanSpeed = 5)).leanSec, 1e-9)
+    }
+
+    @Test fun seatAndWatchFollowTheirOwnHints() {
+        val seat = Hint(lateral = LateralCue.LEFT, lateralStrength = 1.0)
+        val watch = Hint(longitudinal = LongitudinalCue.BRAKE, longitudinalStrength = 0.5)
+        val command = toHardwareCommand(seat, watch, defaults.copy(seatVibration = 5, watchVibration = 5))
+        assertModule(Vibration(left = 1.0), 3.0, 0.0, 6.0, command.cushion)
+        assertEquals(0.5, command.watchStrength, 1e-9)
+    }
+
+    @Test fun seatOffRestsTheSeat() {
+        val left = Hint(lateral = LateralCue.LEFT, lateralStrength = 1.0)
+        val command = toHardwareCommand(left, left, defaults.copy(seatSensitivity = 0, watchVibration = 5))
+        assertEquals(ModuleCommand(), command.headrest)
+        assertEquals(ModuleCommand(), command.backrest)
+        assertEquals(ModuleCommand(), command.cushion)
+        assertEquals(1.0, command.watchStrength, 1e-9)
+    }
+
+    @Test fun watchOffRestsTheWatch() {
+        val left = Hint(lateral = LateralCue.LEFT, lateralStrength = 1.0)
+        val command = toHardwareCommand(left, left, defaults.copy(watchSensitivity = 0, watchVibration = 5))
+        assertEquals(0.0, command.watchStrength, 1e-9)
+        assertModule(Vibration(left = 0.6), 3.0, 0.0, 6.0, command.headrest)
+    }
 }

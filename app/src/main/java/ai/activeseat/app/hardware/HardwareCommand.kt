@@ -19,10 +19,18 @@ data class ModuleCommand(
     val yawDeg: Double = 0.0,
 )
 
-/** A watch has one vibration motor and cannot show direction, so it only gets a strength. */
+/**
+ * A watch has one vibration motor and cannot show direction, so it only gets a strength.
+ * [leanSec] is how long the seat takes to reach 95% of a new pose, on a slow-fast-slow curve.
+ */
 data class HardwareCommand(
     val headrest: ModuleCommand = ModuleCommand(),
     val backrest: ModuleCommand = ModuleCommand(),
     val cushion: ModuleCommand = ModuleCommand(),
     val watchStrength: Double = 0.0,
-)
+    val leanSec: Double = DEFAULT_LEAN_SEC,
+) {
+    companion object {
+        const val DEFAULT_LEAN_SEC = 2.0
+    }
+}

@@ -46,4 +46,17 @@ data class MotionConfig(
     // Output.
     /** A cue stays on at least this long, unless the measured motion changes it. */
     val minHoldMs: Long = 1000,
-)
+) {
+    /**
+     * Every acceleration threshold times [factor], for a passenger's sensitivity. The level bounds
+     * scale too, so the on threshold never climbs past the level 2 bound. Nav turn prediction has
+     * no acceleration threshold and stays as it is.
+     */
+    fun scaled(factor: Double): MotionConfig = copy(
+        lateralOnMps2 = lateralOnMps2 * factor,
+        brakeOnMps2 = brakeOnMps2 * factor,
+        accelOnMps2 = accelOnMps2 * factor,
+        requiredDecelMps2 = requiredDecelMps2 * factor,
+        levelBoundsMps2 = levelBoundsMps2.map { it * factor },
+    )
+}

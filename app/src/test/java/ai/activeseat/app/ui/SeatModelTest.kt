@@ -1,9 +1,11 @@
 package ai.activeseat.app.ui
 
 import ai.activeseat.app.hardware.HardwareCommand
+import ai.activeseat.app.hardware.ModuleCommand
 import ai.activeseat.app.hint.Hint
 import ai.activeseat.app.hint.LateralCue
 import ai.activeseat.app.hint.LongitudinalCue
+import ai.activeseat.app.hardware.Vibration
 import ai.activeseat.app.hardware.toHardwareCommand
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
@@ -108,5 +110,60 @@ class SeatModelTest {
         assertTrue(motion.phase[PART_BACKREST][ZONE_LEFT] > 0)
         repeat(300) { motion.step(0.016f, HardwareCommand()) }
         assertEquals(0f, motion.phase[PART_BACKREST][ZONE_LEFT], 0f)
+    }
+
+    private fun leanLeft(leanSec: Double) = HardwareCommand(headrest = ModuleCommand(rollDeg = 2.0), leanSec = leanSec)
+
+    @Test
+    fun `the lean reaches 95 percent at its lean time without overshooting`() {
+        for (leanSec in doubleArrayOf(0.5, 2.0, 8.0)) {
+            val motion = SeatMotion()
+            val steps = Math.round(leanSec / 0.01).toInt()
+            repeat(steps) { motion.step(0.01f, leanLeft(leanSec)) }
+            assertTrue("$leanSec s: ${motion.rollDeg}", motion.rollDeg >= 2f * 0.95f)
+            assertTrue("$leanSec s: ${motion.rollDeg}", motion.rollDeg <= 2f)
+        }
+    }
+
+    @Test
+    fun `the lean starts slowly`() {
+        val motion = SeatMotion()
+        repeat(50) { motion.step(0.01f, leanLeft(2.0)) }
+        // A single first-order lag with the same 95% time would be past half way here; four stages are near 14%.
+        assertTrue(motion.rollDeg < 2f * 0.25f)
+        assertTrue(motion.rollDeg > 0f)
+    }
+
+    @Test
+    fun `a long frame does not overshoot the lean`() {
+        val motion = SeatMotion()
+        motion.step(0.25f, leanLeft(0.5))
+        motion.step(0.25f, leanLeft(0.5))
+        assertTrue(motion.rollDeg <= 2f)
+    }
+
+    @Test
+    fun `the seat keeps asking for frames while the lean is still settling`() {
+        val motion = SeatMotion()
+        repeat(150) { motion.step(0.01f, leanLeft(2.0)) }
+        assertTrue(motion.step(0.01f, leanLeft(2.0)))
+    }
+
+    @Test
+    fun `reset puts everything back at rest at once`() {
+        val motion = SeatMotion()
+        val busy = HardwareCommand(
+            headrest = ModuleCommand(vibration = Vibration(left = 1.0), rollDeg = 2.0, pitchDeg = 1.0, yawDeg = 3.0),
+            watchStrength = 1.0,
+        )
+        repeat(100) { motion.step(0.016f, busy) }
+        motion.reset()
+        assertEquals(0f, motion.rollDeg, 0f)
+        assertEquals(0f, motion.pitchDeg, 0f)
+        assertEquals(0f, motion.yawDeg, 0f)
+        assertEquals(0f, motion.watch, 0f)
+        assertEquals(0f, motion.vibration[PART_HEADREST][ZONE_LEFT], 0f)
+        assertEquals(0f, motion.phase[PART_HEADREST][ZONE_LEFT], 0f)
+        assertFalse(motion.step(0.016f, HardwareCommand()))
     }
 }

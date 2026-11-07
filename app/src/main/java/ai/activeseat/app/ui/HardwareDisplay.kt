@@ -33,3 +33,10 @@ fun isForecastActive(hint: Hint): Boolean = hint.lateral != LateralCue.NONE || h
 fun strengthPercent(hint: Hint): Int = (max(hint.lateralStrength, hint.longitudinalStrength) * 100).roundToInt()
 
 fun percentText(probability: Double): String = "${(probability * 100).roundToInt()}%"
+
+/** A setting level as the settings panel shows it: off reads as 끔. */
+fun levelText(level: Int): String = if (level <= 0) "끔" else level.toString()
+
+/** The level 0..[max] nearest a point [fraction] of the way along a slider track. */
+fun nearestLevel(fraction: Float, max: Int): Int =
+    if (fraction.isNaN()) 0 else (fraction * max).roundToInt().coerceIn(0, max)
