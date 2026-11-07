@@ -12,7 +12,7 @@ data class Hint(
     val longitudinalStrength: Double = 0.0,
 )
 
-/** Jev's raw probability of each direction at the chosen horizon, all 0 when there is no fresh result. */
+/** Probability of each car maneuver 2 s ahead, from the applied result's push `pOn`. All 0 when nothing is applied. */
 data class MotionProbabilities(
     val forward: Double = 0.0,
     val back: Double = 0.0,

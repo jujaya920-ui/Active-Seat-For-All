@@ -8,47 +8,42 @@ private const val PREDICT_PATH = "/api/predict"
 private const val CONNECT_TIMEOUT_MS = 2000
 private const val READ_TIMEOUT_MS = 3000
 
-/** One axis of a prediction. [strength] is 0..1 and [probabilities] covers every direction. */
-data class AxisPrediction(
-    val value: String,
-    val probability: Double,
-    val strength: Double,
-    val probabilities: Map<String, Double>,
-)
+/**
+ * How likely the passenger's body is pushed one way 2 s ahead. [level] is 1..4 (weak..very strong),
+ * the rounded [levelMean], and only means something when the push happens.
+ */
+data class PushPrediction(val pOn: Double, val level: Int, val levelMean: Double)
 
-data class Prediction(
+/**
+ * Directions are the passenger's body, not the car: [forward] is braking, [backward] accelerating,
+ * [right] the car turning left and [left] the car turning right.
+ */
+data class PushForecast(
     val horizonSec: Double,
-    val lateral: AxisPrediction,
-    val longitudinal: AxisPrediction,
-    val hint: Double,
+    val forward: PushPrediction,
+    val backward: PushPrediction,
+    val left: PushPrediction,
+    val right: PushPrediction,
 )
 
 sealed interface PredictResult {
     data object NotConfigured : PredictResult
-    data class Success(val rttMs: Long, val serverMs: Long, val predictions: List<Prediction>) : PredictResult
+    data class Success(val rttMs: Long, val serverMs: Long, val push: PushForecast) : PredictResult
     data class Failure(val message: String) : PredictResult
 }
 
-fun parsePredictResponse(body: String): List<Prediction> {
-    val items = JSONObject(body).getJSONArray("predictions")
-    return List(items.length()) { index ->
-        val item = items.getJSONObject(index)
-        Prediction(
-            horizonSec = item.getDouble("horizonSec"),
-            lateral = parseAxis(item.getJSONObject("lateral")),
-            longitudinal = parseAxis(item.getJSONObject("longitudinal")),
-            hint = item.getDouble("hint"),
-        )
+fun parsePredictResponse(body: String): PushForecast {
+    val json = JSONObject(body)
+    val push = json.getJSONObject("push")
+    fun direction(name: String) = push.getJSONObject(name).let {
+        PushPrediction(pOn = it.getDouble("pOn"), level = it.getInt("level"), levelMean = it.getDouble("levelMean"))
     }
-}
-
-private fun parseAxis(axis: JSONObject): AxisPrediction {
-    val probabilities = axis.getJSONObject("probabilities")
-    return AxisPrediction(
-        value = axis.getString("value"),
-        probability = axis.getDouble("probability"),
-        strength = axis.getDouble("strength"),
-        probabilities = probabilities.keys().asSequence().associateWith(probabilities::getDouble),
+    return PushForecast(
+        horizonSec = json.getDouble("horizonSec"),
+        forward = direction("forward"),
+        backward = direction("backward"),
+        left = direction("left"),
+        right = direction("right"),
     )
 }
 

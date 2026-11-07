@@ -5,8 +5,6 @@ import ai.activeseat.app.vehicle.SignalSample
 import org.json.JSONArray
 import org.json.JSONObject
 
-val DEFAULT_HORIZONS_SEC = listOf(2.0, 2.4)
-
 /** `type` carries NaviHelper's value unchanged. */
 data class NavItem(val type: String, val distanceM: Int)
 
@@ -21,17 +19,16 @@ object NoNavContext : NavContext {
     override fun frontEvent(): NavItem? = null
 }
 
+/** The server always predicts 2 s ahead, so the input carries no horizon. */
 data class PredictionInput(
     val signals: List<SignalSample>,
     val nextTurn: NavItem?,
     val frontEvent: NavItem?,
-    val horizonsSec: List<Double> = DEFAULT_HORIZONS_SEC,
 ) {
     fun toJson(): JSONObject = JSONObject().apply {
         put("signals", JSONArray().apply { signals.forEach { put(it.toJson()) } })
         put("nextTurn", nextTurn.toJsonOrNull())
         put("frontEvent", frontEvent.toJsonOrNull())
-        put("horizonsSec", JSONArray().apply { horizonsSec.forEach { put(it) } })
     }
 }
 

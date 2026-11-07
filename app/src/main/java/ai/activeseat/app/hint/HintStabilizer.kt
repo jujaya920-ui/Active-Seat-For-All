@@ -1,117 +1,176 @@
 package ai.activeseat.app.hint
 
-import ai.activeseat.app.prediction.AxisPrediction
 import ai.activeseat.app.prediction.PredictResult
-import ai.activeseat.app.prediction.Prediction
-import kotlin.math.abs
+import ai.activeseat.app.prediction.PushForecast
+import ai.activeseat.app.prediction.PushPrediction
+import kotlin.math.max
 
-private const val MS_PER_SEC = 1000.0
+private const val MAX_LEVEL = 4
 
 /**
  * Turns prediction results into a steady [Hint]. Synchronized because results and ticks may arrive
  * on different threads of the default dispatcher.
+ *
+ * Timing: a response answers the window read at its request start t0 and is applied at exactly
+ * t0 + [HintConfig.applyDelayMs], never earlier. [onResult] only stores it as pending; [onResult] and
+ * [tick] apply whatever pending is due. The sampler ticks every 200 ms, so callers that want the exact
+ * moment schedule one extra [tick] at [pendingApplyAtMs].
  */
 class HintStabilizer(
     private val config: HintConfig,
     private val clockMs: () -> Long,
-    private val rtt: RttTracker,
 ) {
-    private val lateral = Axis(config, LateralCue.NONE)
-    private val longitudinal = Axis(config, LongitudinalCue.NONE)
-    private var lastSuccessMs: Long? = null
+    private val forward = Push(config)
+    private val backward = Push(config)
+    private val left = Push(config)
+    private val right = Push(config)
+    private var pending: Pending? = null
+    private var lastApplyMs: Long? = null
     private var probabilities = MotionProbabilities()
 
+    private class Pending(val push: PushForecast, val applyAtMs: Long)
+
+    /**
+     * Anything but a success turns every cue off at once. A success slower than
+     * [HintConfig.maxRoundTripMs] from [requestStartMs] is dropped and changes nothing: the stale rule
+     * turns cues off if no newer response is applied.
+     */
     @Synchronized
-    fun onResult(result: PredictResult?): Hint {
-        if (result !is PredictResult.Success || result.predictions.isEmpty()) {
+    fun onResult(result: PredictResult?, requestStartMs: Long): Hint {
+        val nowMs = clockMs()
+        // An older pending that is already due goes first, so a late tick never skips it.
+        advance(nowMs)
+        if (result !is PredictResult.Success) {
+            pending = null
             allOff()
             return hint()
         }
-        val nowMs = clockMs()
-        lastSuccessMs = nowMs
-        // Recorded first: horizons count from the input this response answers, so its own RTT
-        // is the best evidence of how much of the horizon is already spent.
-        rtt.record(result.rttMs)
-        val prediction = nearest(result.predictions)
-        lateral.update(prediction.lateral.value.toLateralCue(), prediction.lateral, nowMs)
-        longitudinal.update(prediction.longitudinal.value.toLongitudinalCue(), prediction.longitudinal, nowMs)
-        probabilities = prediction.toMotionProbabilities()
+        // The clock covers time before the call; rttMs covers the call alone.
+        if (max(result.rttMs, nowMs - requestStartMs) > config.maxRoundTripMs) return hint()
+        pending = Pending(result.push, requestStartMs + config.applyDelayMs)
+        advance(nowMs)
         return hint()
     }
 
     @Synchronized
     fun tick(): Hint {
-        val successMs = lastSuccessMs
-        if (successMs != null && clockMs() - successMs > config.staleAfterMs) allOff()
+        advance(clockMs())
         return hint()
     }
+
+    /** When the stored response will be applied, or null when none waits. */
+    @Synchronized
+    fun pendingApplyAtMs(): Long? = pending?.applyAtMs
 
     @Synchronized
     fun probabilities(): MotionProbabilities = probabilities
 
-    /** On a tie the first listed prediction wins. */
-    private fun nearest(predictions: List<Prediction>): Prediction {
-        val targetSec = config.displayLeadSec + rtt.estimateMs() / MS_PER_SEC
-        return predictions.minBy { abs(it.horizonSec - targetSec) }
+    private fun advance(nowMs: Long) {
+        pending?.takeIf { nowMs >= it.applyAtMs }?.let {
+            pending = null
+            apply(it.push, nowMs)
+        }
+        val appliedMs = lastApplyMs
+        if (appliedMs != null && nowMs - appliedMs > config.staleAfterMs) allOff()
+    }
+
+    private fun apply(push: PushForecast, nowMs: Long) {
+        lastApplyMs = nowMs
+        forward.update(push.forward, nowMs)
+        backward.update(push.backward, nowMs)
+        left.update(push.left, nowMs)
+        right.update(push.right, nowMs)
+        probabilities = push.toMotionProbabilities()
     }
 
     private fun allOff() {
-        lateral.off()
-        longitudinal.off()
+        forward.off()
+        backward.off()
+        left.off()
+        right.off()
+        lastApplyMs = null
         probabilities = MotionProbabilities()
     }
 
-    private fun hint() = Hint(lateral.cue, lateral.strength, longitudinal.cue, longitudinal.strength)
+    /** Body push maps to the car's maneuver: forward is braking, and a push right means a left turn. */
+    private fun hint(): Hint {
+        val longitudinal = stronger(forward, backward)
+        val lateral = stronger(right, left)
+        return Hint(
+            lateral = when (lateral) {
+                right -> LateralCue.LEFT
+                left -> LateralCue.RIGHT
+                else -> LateralCue.NONE
+            },
+            lateralStrength = lateral?.strength() ?: 0.0,
+            longitudinal = when (longitudinal) {
+                forward -> LongitudinalCue.BRAKE
+                backward -> LongitudinalCue.ACCELERATE
+                else -> LongitudinalCue.NONE
+            },
+            longitudinalStrength = longitudinal?.strength() ?: 0.0,
+        )
+    }
+
+    /**
+     * The one that is on. When both are, the higher latest pOn wins, since Jev often raises both
+     * sides yet ranks the real one higher; then the higher level. A full tie cancels to none.
+     */
+    private fun stronger(a: Push, b: Push): Push? = when {
+        a.on && b.on -> when {
+            a.pOn > b.pOn -> a
+            b.pOn > a.pOn -> b
+            a.level > b.level -> a
+            b.level > a.level -> b
+            else -> null
+        }
+        a.on -> a
+        b.on -> b
+        else -> null
+    }
 }
 
-private class Axis<C : Any>(private val config: HintConfig, private val none: C) {
-    var cue: C = none
+/** One push direction with hysteresis and a minimum hold. */
+private class Push(private val config: HintConfig) {
+    var on = false
         private set
-    var strength = 0.0
+    var level = 0
+        private set
+
+    /** Latest applied probability, kept even while off so a conflict compares current evidence. */
+    var pOn = 0.0
         private set
     private var onSinceMs = 0L
 
-    /** Probability decides whether the cue is on. How strong it is comes from the prediction alone. */
-    fun update(next: C, axis: AxisPrediction, nowMs: Long) {
+    fun update(prediction: PushPrediction, nowMs: Long) {
+        pOn = prediction.pOn
         when {
-            next == none -> releaseAfterHold(nowMs)
-            next == cue && axis.probability >= config.offProbability -> strength = axis.strength
-            next != cue && axis.probability >= config.onProbability -> {
-                // Covers both turning on and a direct reversal, which skips the min hold.
-                cue = next
-                strength = axis.strength
+            !on && prediction.pOn >= config.onProbability -> {
+                on = true
+                level = prediction.level
                 onSinceMs = nowMs
             }
-            else -> releaseAfterHold(nowMs)
+            on && prediction.pOn >= config.offProbability -> level = prediction.level
+            // While the hold runs, the cue keeps its last level.
+            on && nowMs - onSinceMs < config.minHoldMs -> Unit
+            else -> off()
         }
     }
 
     fun off() {
-        cue = none
-        strength = 0.0
+        on = false
+        level = 0
+        pOn = 0.0
     }
 
-    /** While the hold runs, the cue keeps its last strength. */
-    private fun releaseAfterHold(nowMs: Long) {
-        if (nowMs - onSinceMs >= config.minHoldMs) off()
-    }
+    /** Level 1..4 maps to 0.25..1.0. */
+    fun strength(): Double = level.coerceIn(1, MAX_LEVEL).toDouble() / MAX_LEVEL
 }
 
-private fun Prediction.toMotionProbabilities() = MotionProbabilities(
-    forward = longitudinal.probabilities["accelerate"] ?: 0.0,
-    back = longitudinal.probabilities["brake"] ?: 0.0,
-    left = lateral.probabilities["left"] ?: 0.0,
-    right = lateral.probabilities["right"] ?: 0.0,
+/** Shown as the car's maneuver, so each body push lands on the opposite side. */
+private fun PushForecast.toMotionProbabilities() = MotionProbabilities(
+    forward = backward.pOn,
+    back = forward.pOn,
+    left = right.pOn,
+    right = left.pOn,
 )
-
-private fun String.toLateralCue() = when (this) {
-    "left" -> LateralCue.LEFT
-    "right" -> LateralCue.RIGHT
-    else -> LateralCue.NONE
-}
-
-private fun String.toLongitudinalCue() = when (this) {
-    "accelerate" -> LongitudinalCue.ACCELERATE
-    "brake" -> LongitudinalCue.BRAKE
-    else -> LongitudinalCue.NONE
-}

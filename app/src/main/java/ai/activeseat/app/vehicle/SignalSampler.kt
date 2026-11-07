@@ -7,10 +7,11 @@ import kotlinx.coroutines.delay
 import kotlinx.coroutines.isActive
 
 const val SAMPLE_INTERVAL_MS = 200L
-const val SAMPLE_WINDOW_SIZE = 5
+/** 6.6 s: three 2 s description windows plus the three samples their 0.6 s trailing average needs. */
+const val SAMPLE_WINDOW_SIZE = 33
 
 /**
- * Samples the latest source value on a fixed 0.2 s grid and keeps the last five.
+ * Samples the latest source value on a fixed 0.2 s grid and keeps the last [SAMPLE_WINDOW_SIZE].
  * Ages are computed on read from the app's own clock, so no clock sync is needed.
  */
 class SignalSampler(
@@ -29,7 +30,7 @@ class SignalSampler(
         return signal
     }
 
-    /** Oldest first. Holds fewer than five entries until the sampler has warmed up. */
+    /** Oldest first. Holds fewer than [SAMPLE_WINDOW_SIZE] entries until the sampler has warmed up. */
     @Synchronized
     fun window(): List<SignalSample> {
         val now = clockMs()

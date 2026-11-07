@@ -14,20 +14,22 @@ internal fun nextCallDelayMs(elapsedMs: Long): Long = max(0L, PREDICT_INTERVAL_M
 
 /**
  * Starts a call once a second, measured from call start, one request at a time.
- * `onResult` gets null while warming up or disabled. `enabled` keeps an idle app from paying for calls.
+ * `onResult` gets null while warming up or disabled, plus the [clockMs] time the window was read,
+ * which is the moment the answer's timing counts from. `enabled` keeps an idle app from paying for calls.
  */
 class PredictionLoop(
     private val assembler: PredictionAssembler,
     private val client: PredictClient,
+    private val clockMs: () -> Long,
     private val enabled: () -> Boolean,
-    private val onResult: (PredictResult?) -> Unit,
+    private val onResult: (result: PredictResult?, requestStartMs: Long) -> Unit,
 ) {
     suspend fun run() {
         while (currentCoroutineContext().isActive) {
-            val startedNs = System.nanoTime()
+            val startedMs = clockMs()
             val input = if (enabled()) assembler.assemble() else null
-            onResult(input?.let { withContext(Dispatchers.IO) { client.predict(it) } })
-            delay(nextCallDelayMs((System.nanoTime() - startedNs) / 1_000_000))
+            onResult(input?.let { withContext(Dispatchers.IO) { client.predict(it) } }, startedMs)
+            delay(nextCallDelayMs(clockMs() - startedMs))
         }
     }
 }

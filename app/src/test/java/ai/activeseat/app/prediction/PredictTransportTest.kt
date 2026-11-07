@@ -13,18 +13,23 @@ class PredictTransportTest {
     }
 
     @Test
-    fun `response keeps strength and every direction's probability per axis`() {
-        val prediction = parsePredictResponse(
-            """{"predictions":[{"horizonSec":2,
-              "lateral":{"value":"right","probability":0.9,"confidence":0.8,"strength":0.73,
-                "probabilities":{"left":0,"right":0.9,"straight":0.1}},
-              "longitudinal":{"value":"brake","probability":0.7,"confidence":0.6,"strength":0.4,
-                "probabilities":{"accelerate":0.1,"brake":0.7,"steady":0.2}},
-              "hint":0.9}],"serverMs":210}""",
-        ).single()
-        assertEquals("right", prediction.lateral.value)
-        assertEquals(0.73, prediction.lateral.strength, 1e-9)
-        assertEquals(mapOf("left" to 0.0, "right" to 0.9, "straight" to 0.1), prediction.lateral.probabilities)
-        assertEquals(0.4, prediction.longitudinal.strength, 1e-9)
+    fun `response keeps every push direction`() {
+        val push = parsePredictResponse(
+            """{"horizonSec":2,"push":{
+              "forward":{"pOn":0.88,"level":2,"levelMean":2.08},
+              "backward":{"pOn":0.04,"level":1,"levelMean":1.35},
+              "left":{"pOn":0.06,"level":1,"levelMean":1.25},
+              "right":{"pOn":0.62,"level":3,"levelMean":2.6}},"serverMs":512}""",
+        )
+        assertEquals(PushPrediction(0.88, 2, 2.08), push.forward)
+        assertEquals(PushPrediction(0.04, 1, 1.35), push.backward)
+        assertEquals(PushPrediction(0.06, 1, 1.25), push.left)
+        assertEquals(PushPrediction(0.62, 3, 2.6), push.right)
+        assertEquals(2.0, push.horizonSec, 0.0)
+    }
+
+    @Test(expected = org.json.JSONException::class)
+    fun `missing direction is rejected`() {
+        parsePredictResponse("""{"horizonSec":2,"push":{"forward":{"pOn":0.5,"level":1,"levelMean":1.0}}}""")
     }
 }

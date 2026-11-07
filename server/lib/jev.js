@@ -1,91 +1,42 @@
 // Input validation, Jev request building and response mapping for /api/predict.
 
+import { DIRECTIONS, SAMPLE_COUNT, describeState } from './describe.js';
+
 export const GATEWAY_URL = 'https://ai-gateway.vercel.sh/v1/evaluate';
 export const JEV_MODEL = 'typesafe-ai/jev';
 export const UPSTREAM_TIMEOUT_MS = 1500;
 
-const SIGNAL_COUNT = 5;
-const MAX_HORIZONS = 6;
 const MAX_LABEL_LENGTH = 64;
+export const HORIZON_SEC = 2;
 
-const LATERAL_NEUTRAL = 'straight';
-const LONGITUDINAL_NEUTRAL = 'steady';
-const LATERAL_CLASSES = ['left', 'right', LATERAL_NEUTRAL];
-const LONGITUDINAL_CLASSES = ['accelerate', 'brake', LONGITUDINAL_NEUTRAL];
+const LEVEL_CLASSES = ['weak', 'moderate', 'strong', 'very strong'];
 
-// Provisional strength of each band. Strength has its own questions because folding it into the
-// direction classes lowered direction accuracy on every measured route.
-const GENTLE_STRENGTH = 0.4;
-const FIRM_STRENGTH = 1;
-
-const round = (value, digits) => Number(value.toFixed(digits));
-
-// Spelled out because Jev confused a negative steeringDeg with the name of the next turn.
-const describeWheel = (deg) => {
-  const size = Math.abs(Math.round(deg));
-  return size === 0 ? 'centred' : `${size} degrees ${deg > 0 ? 'left' : 'right'}`;
+const LEVEL_CRITERIA = {
+  weak: 'like an ordinary start or stop',
+  moderate: 'the body clearly leans',
+  strong: 'a standing passenger would need to hold on',
+  'very strong': 'like an emergency stop or a sharp turn taken fast',
 };
 
-// Criteria only define each class. The instructions hold driving knowledge in words, with no timing
-// numbers: when a manoeuvre starts is Jev's judgement from state, on any road.
-function lateralQuestion(h, i) {
+// Jev only judges: every input is already plain language in state, read against state.scale and state.rules.
+function onQuestion(dir) {
   return {
     type: 'choice',
-    instructions: `Where will the steering wheel be exactly ${h} seconds from now? Judge it from \`projections[${i}]\`, the signals and \`nextTurn\`. A driver keeps the wheel centred until the car is actually at a turn, even if the turn is announced and the turn signal is on, then steers the way the turn goes. The road can also curve with no announced turn, so a wheel already off centre follows the road, and \`nextTurn\` says nothing about it unless the car is at that turn. Read the side from \`wheelNow\`, not from the name of the next turn. Once a turn is under way the wheel returns to centre. If a stopped car is close to a turn, it steers as it pulls away.`,
+    instructions: `Exactly ${HORIZON_SEC} seconds from now, will the passenger's body be pushed ${dir}? Judge it from \`windows\`, \`now\` and \`nav\`, reading them with \`scale\` and \`rules\`.`,
     criteria: {
-      left: 'the wheel is more than 15 degrees left of centre at that moment',
-      right: 'the wheel is more than 15 degrees right of centre at that moment',
-      [LATERAL_NEUTRAL]: 'the wheel is within 15 degrees of centre at that moment',
+      yes: `at that moment the body is pushed ${dir}, weak or stronger`,
+      no: `at that moment there is no push ${dir}, or the push goes another way`,
     },
   };
 }
 
-function longitudinalQuestion(h, i) {
+function levelQuestion(dir) {
   return {
     type: 'choice',
-    instructions: `How will the speed be changing exactly ${h} seconds from now? Judge it from \`projections[${i}]\`, \`motion\`, the signals, \`nextTurn\` and \`frontEvent\`. The current signals only show what the driver is doing now, and braking for something ahead always starts while the speed still looks steady, so steady signals are no evidence that the car will still be steady then. A driver does not wait until only hard braking would be enough: judge whether the driver would already be slowing by then from \`stopDecelAfterMps2\`, the deceleration that would be needed at the horizon if the car had not slowed by then. A car at road speed cannot take a turn or enter congestion without first shedding much of that speed, so on an approach at speed the next thing the driver does is brake, and the only question is whether that has begun by then. Choose the most likely class even when the driver has not begun yet. A car leaving a turn or a stop speeds up, and as the wheel returns to centre the driver goes back on the accelerator. Far from any turn or event, a driver holds speed.`,
-    criteria: {
-      accelerate: 'speed is rising by more than 0.6 m/s² at that moment',
-      brake: 'speed is falling by more than 0.6 m/s² at that moment',
-      [LONGITUDINAL_NEUTRAL]: 'speed is changing by less than 0.6 m/s² at that moment',
-    },
+    instructions: `If the passenger's body is pushed ${dir} exactly ${HORIZON_SEC} seconds from now, how strong is that push? Judge it from \`windows\`, \`now\` and \`nav\`, reading them with \`scale\` and \`rules\`.`,
+    criteria: Object.fromEntries(LEVEL_CLASSES.map((c) => [c, LEVEL_CRITERIA[c]])),
   };
 }
-
-// One strength per axis covers every horizon: the horizons are moments of the same manoeuvre.
-function lateralStrengthQuestion(h) {
-  return {
-    type: 'choice',
-    instructions: `If the car takes a corner or curve within the next ${h} seconds, how hard will a passenger be pushed sideways at its peak? Judge it from the signals, \`nextTurn\`, \`wheelNow\` and \`motion\`. The push grows with the square of the speed and with how tight the path is, so the same wheel angle pushes much harder at higher speed, and a driver normally slows for a tight turn. If the car stays straight, answer for the slight curve it follows.`,
-    criteria: {
-      gentle: 'the peak sideways push is below 2 m/s²',
-      firm: 'the peak sideways push is 2 m/s² or more',
-    },
-  };
-}
-
-function longitudinalStrengthQuestion(h) {
-  return {
-    type: 'choice',
-    instructions: `If the car speeds up or slows down within the next ${h} seconds, how hard will a passenger feel it at its peak? Judge it from \`motion\`, the signals, \`nextTurn\`, \`frontEvent\` and \`stopDecelAfterMps2\`, which shows how hard the driver would have to brake. A car pulling away gently stays gentle, and a late stop for something close ahead is firm. If the speed holds, answer for the small change that happens anyway.`,
-    criteria: {
-      gentle: 'the peak speed change is below 2 m/s²',
-      firm: 'the peak speed change is 2 m/s² or more',
-    },
-  };
-}
-
-const STATE_NOTES =
-  'signals are oldest first. ageMs is how long ago the sample was taken. steeringDeg is positive to the left. ' +
-  'wheelNow says where the wheel points now. motion is computed from signals: accelMps2 is the speed change per second, ' +
-  'steeringRateDegS the steering change per second. ' +
-  'etaSec is distanceM divided by the current speed, null when stopped. ' +
-  'nextTurn and frontEvent are null when absent. ' +
-  'projections has one entry per horizon: what simple arithmetic gives if speed and steering keep changing at the ' +
-  'current rate. It is not a prediction: a driver changes what they do. nextTurnEtaAfterSec and ' +
-  'frontEventEtaAfterSec are etaSec minus the horizon, negative when the car gets there before the horizon. ' +
-  'stopDecelAfterMps2 is the constant deceleration that would stop the car at the nearest of nextTurn and ' +
-  'frontEvent, starting at the horizon at the current speed, null when there is neither or the car would be past it.';
 
 export class UpstreamError extends Error {
   constructor(code, message) {
@@ -94,6 +45,7 @@ export class UpstreamError extends Error {
   }
 }
 
+const round = (value, digits) => Number(value.toFixed(digits));
 const isFiniteNumber = (v) => typeof v === 'number' && Number.isFinite(v);
 const isObject = (v) => typeof v === 'object' && v !== null && !Array.isArray(v);
 const isLabel = (v) => typeof v === 'string' && v.length > 0 && v.length <= MAX_LABEL_LENGTH;
@@ -120,10 +72,10 @@ function routeItemError(item, name) {
 export function validateInput(body) {
   if (!isObject(body)) return 'body must be a JSON object';
 
-  const { signals, nextTurn, frontEvent, horizonsSec } = body;
+  const { signals, nextTurn, frontEvent } = body;
 
-  if (!Array.isArray(signals) || signals.length !== SIGNAL_COUNT) {
-    return `signals must be an array of ${SIGNAL_COUNT}`;
+  if (!Array.isArray(signals) || signals.length !== SAMPLE_COUNT) {
+    return `signals must be an array of ${SAMPLE_COUNT}`;
   }
   for (let i = 0; i < signals.length; i++) {
     const error = signalError(signals[i], i);
@@ -133,158 +85,61 @@ export function validateInput(body) {
     }
   }
 
-  const routeError = routeItemError(nextTurn, 'nextTurn') ?? routeItemError(frontEvent, 'frontEvent');
-  if (routeError) return routeError;
-
-  if (!Array.isArray(horizonsSec) || horizonsSec.length === 0 || horizonsSec.length > MAX_HORIZONS) {
-    return `horizonsSec must have 1 to ${MAX_HORIZONS} items`;
-  }
-  if (!horizonsSec.every((h) => isFiniteNumber(h) && h > 0)) {
-    return 'horizonsSec items must be positive numbers';
-  }
-
-  return null;
+  return routeItemError(nextTurn, 'nextTurn') ?? routeItemError(frontEvent, 'frontEvent');
 }
 
-function pickRouteItem(item, speedKph) {
-  if (item === null) return null;
-  const etaSec = speedKph > 0 ? round(item.distanceM / (speedKph / 3.6), 1) : null;
-  return { type: item.type, distanceM: item.distanceM, etaSec };
+const routeItem = (item) => (item === null ? null : { type: item.type, distanceM: item.distanceM });
+
+// Only contract fields reach describeState, so anything else in the body never reaches Jev.
+export function buildState({ signals, nextTurn, frontEvent }) {
+  const rows = signals.map(({ speedKph, steeringDeg, brake, turnSignal }) => ({ speedKph, steeringDeg, brake, turnSignal }));
+  return describeState(rows, routeItem(nextTurn), routeItem(frontEvent));
 }
 
-function deriveMotion(signals) {
-  const first = signals[0];
-  const last = signals[signals.length - 1];
-  const spanS = (first.ageMs - last.ageMs) / 1000;
-  return {
-    accelMps2: round((last.speedKph - first.speedKph) / 3.6 / spanS, 2),
-    steeringRateDegS: round((last.steeringDeg - first.steeringDeg) / spanS, 0),
-  };
-}
-
-const etaAfter = (item, h) => (item?.etaSec == null ? null : round(item.etaSec - h, 1));
-
-// Stopping deceleration from the horizon on, if the car holds its current speed until then.
-function stopDecelAfter(mps, h, nextTurn, frontEvent) {
-  const distances = [nextTurn, frontEvent].filter(Boolean).map((item) => item.distanceM);
-  if (mps === 0 || distances.length === 0) return null;
-  const left = Math.min(...distances) - mps * h;
-  return left > 0 ? round((mps * mps) / (2 * left), 2) : null;
-}
-
-// Straight-line arithmetic per horizon. Nothing here is a judgement about what the driver will do.
-function deriveProjections(horizonsSec, last, motion, nextTurn, frontEvent) {
-  return horizonsSec.map((horizonSec) => ({
-    horizonSec,
-    speedKph: round(Math.max(0, last.speedKph + motion.accelMps2 * 3.6 * horizonSec), 1),
-    wheel: describeWheel(last.steeringDeg + motion.steeringRateDegS * horizonSec),
-    nextTurnEtaAfterSec: etaAfter(nextTurn, horizonSec),
-    frontEventEtaAfterSec: etaAfter(frontEvent, horizonSec),
-    stopDecelAfterMps2: stopDecelAfter(last.speedKph / 3.6, horizonSec, nextTurn, frontEvent),
-  }));
-}
-
-// Copies contract fields one by one, so anything else in the body never reaches Jev.
-// Derived values come from the same contract fields, so the app's request does not change.
-export function buildState({ signals, nextTurn, frontEvent, horizonsSec }) {
-  const last = signals[signals.length - 1];
-  const motion = deriveMotion(signals);
-  const turn = pickRouteItem(nextTurn, last.speedKph);
-  const front = pickRouteItem(frontEvent, last.speedKph);
-  return {
-    notes: STATE_NOTES,
-    signals: signals.map(({ ageMs, speedKph, steeringDeg, brake, turnSignal }) => ({
-      ageMs,
-      speedKph,
-      steeringDeg,
-      brake,
-      turnSignal,
-    })),
-    wheelNow: describeWheel(last.steeringDeg),
-    motion,
-    projections: deriveProjections(horizonsSec, last, motion, turn, front),
-    nextTurn: turn,
-    frontEvent: front,
-  };
-}
-
-// One request covers every horizon. Keys use the index because horizons contain dots.
 export function buildJevRequest(input) {
-  const { horizonsSec } = input;
   const questions = {};
-
-  horizonsSec.forEach((h, i) => {
-    questions[`lateral_${i}`] = lateralQuestion(h, i);
-    questions[`longitudinal_${i}`] = longitudinalQuestion(h, i);
-  });
-  const lastHorizon = Math.max(...horizonsSec);
-  questions.lateral_strength = lateralStrengthQuestion(lastHorizon);
-  questions.longitudinal_strength = longitudinalStrengthQuestion(lastHorizon);
-
+  for (const dir of DIRECTIONS) {
+    questions[`${dir}_on`] = onQuestion(dir);
+    questions[`${dir}_level`] = levelQuestion(dir);
+  }
   return { model: JEV_MODEL, state: buildState(input), questions };
 }
 
 const isProbability = (v) => isFiniteNumber(v) && v >= 0 && v <= 1;
 
-// Expected band strength, from an answer the same checks apply to as any other.
-function mapStrength(jev, key) {
-  const answer = jev.answers[key];
-  const gentle = answer?.probabilities?.gentle;
-  const firm = answer?.probabilities?.firm;
-  if (!isProbability(gentle) || !isProbability(firm) || gentle + firm === 0) {
-    throw new UpstreamError('upstream_bad_response', `missing strength for ${key}`);
+function probabilitiesOf(jev, key, classes) {
+  const probabilities = jev.answers[key]?.probabilities;
+  if (!isObject(probabilities) || !classes.every((c) => isProbability(probabilities[c]))) {
+    throw new UpstreamError('upstream_bad_response', `missing probabilities for ${key}`);
   }
-  return round((gentle * GENTLE_STRENGTH + firm * FIRM_STRENGTH) / (gentle + firm), 3);
+  return probabilities;
 }
 
-function mapAxis(jev, key, classes, neutral, strength) {
-  const answer = jev.answers[key];
-  if (!isObject(answer) || !classes.includes(answer.choice)) {
-    throw new UpstreamError('upstream_bad_response', `invalid answer for ${key}`);
+// Strength if pushed: the probability-weighted mean of levels 1..4, rounded to the nearest level.
+function mapDirection(jev, dir) {
+  const on = probabilitiesOf(jev, `${dir}_on`, ['yes', 'no']);
+  const level = probabilitiesOf(jev, `${dir}_level`, LEVEL_CLASSES);
+  const total = LEVEL_CLASSES.reduce((sum, c) => sum + level[c], 0);
+  if (on.yes + on.no === 0 || total === 0) {
+    throw new UpstreamError('upstream_bad_response', `empty probabilities for ${dir}`);
   }
-
-  const { probabilities } = answer;
-  // The docs show confidence under providerMetadata for the AI SDK. The raw HTTP location
-  // is not verified, so the answer object is accepted as well.
-  const confidence = answer.confidence ?? jev.providerMetadata?.typesafe?.confidence?.[key];
-  if (!isObject(probabilities) || !classes.every((c) => isProbability(probabilities[c])) || !isProbability(confidence)) {
-    throw new UpstreamError('upstream_bad_response', `missing probability or confidence for ${key}`);
-  }
-
+  const levelMean = LEVEL_CLASSES.reduce((sum, c, i) => sum + level[c] * (i + 1), 0) / total;
   return {
-    value: answer.choice,
-    probability: probabilities[answer.choice],
-    confidence,
-    strength: answer.choice === neutral ? 0 : strength,
-    probabilities: Object.fromEntries(classes.map((c) => [c, probabilities[c]])),
+    pOn: round(on.yes / (on.yes + on.no), 3),
+    level: Math.min(4, Math.max(1, Math.round(levelMean))),
+    levelMean: round(levelMean, 2),
   };
 }
 
-// Largest probability of a moving class on this axis.
-const motionProbability = ({ probabilities }, classes, neutral) =>
-  Math.max(...classes.filter((c) => c !== neutral).map((c) => probabilities[c]));
-
-// Maps a Jev response to the contract's predictions. Throws rather than filling gaps.
-export function mapJevResponse(jev, horizonsSec) {
+// Maps a Jev response to the contract's prediction. Throws rather than filling gaps.
+export function mapJevResponse(jev) {
   if (!isObject(jev) || !isObject(jev.answers)) {
     throw new UpstreamError('upstream_bad_response', 'response has no answers');
   }
-
-  const lateralStrength = mapStrength(jev, 'lateral_strength');
-  const longitudinalStrength = mapStrength(jev, 'longitudinal_strength');
-  return horizonsSec.map((horizonSec, i) => {
-    const lateral = mapAxis(jev, `lateral_${i}`, LATERAL_CLASSES, LATERAL_NEUTRAL, lateralStrength);
-    const longitudinal = mapAxis(jev, `longitudinal_${i}`, LONGITUDINAL_CLASSES, LONGITUDINAL_NEUTRAL, longitudinalStrength);
-    return {
-      horizonSec,
-      lateral,
-      longitudinal,
-      hint: Math.max(
-        motionProbability(lateral, LATERAL_CLASSES, LATERAL_NEUTRAL),
-        motionProbability(longitudinal, LONGITUDINAL_CLASSES, LONGITUDINAL_NEUTRAL),
-      ),
-    };
-  });
+  return {
+    horizonSec: HORIZON_SEC,
+    push: Object.fromEntries(DIRECTIONS.map((dir) => [dir, mapDirection(jev, dir)])),
+  };
 }
 
 // Sends one request to the gateway. The timeout also covers reading the response body.

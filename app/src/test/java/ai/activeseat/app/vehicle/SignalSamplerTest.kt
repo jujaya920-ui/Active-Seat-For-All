@@ -16,17 +16,18 @@ class SignalSamplerTest {
     private val sampler = SignalSampler(source) { now }
 
     @Test
-    fun keepsLastFiveOldestFirstWithAges() {
-        repeat(7) { i ->
+    fun keepsLastWindowOldestFirstWithAges() {
+        repeat(35) { i ->
             source.signal = VehicleSignal(speedKph = i.toDouble())
             sampler.sample()
-            if (i < 6) now += 200
+            if (i < 34) now += 200
         }
 
         val window = sampler.window()
 
-        assertEquals(listOf(2.0, 3.0, 4.0, 5.0, 6.0), window.map { it.speedKph })
-        assertEquals(listOf(800L, 600L, 400L, 200L, 0L), window.map { it.ageMs })
+        assertEquals(SAMPLE_WINDOW_SIZE, window.size)
+        assertEquals((2..34).map { it.toDouble() }, window.map { it.speedKph })
+        assertEquals((32 downTo 0).map { it * 200L }, window.map { it.ageMs })
     }
 
     @Test

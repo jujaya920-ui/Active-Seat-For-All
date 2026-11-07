@@ -1,68 +1,65 @@
-// Derives the expected ground truth for each time, to compare with predictions later.
-// A row at time t describes what the car is doing at t + horizon, matching the prediction
-// API's lateral and longitudinal values.
+// Ground truth for the push prediction: the level of each body push at t + horizon.
+// Uses the server's own preprocessing, so truth and the words Jev reads share one definition.
 // Usage: node tools/scenario/labels.mjs [scenario.json] [--horizon 2] [--json]
 import { readFileSync } from 'node:fs';
 import { dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { LABEL, STEP_S, accelerations } from './common.mjs';
+import { DIRECTIONS, SMOOTH, directionLevels, physics } from '../../server/lib/describe.js';
+import { STEP_S } from './common.mjs';
 
-export function lateralLabel(steeringDeg) {
-  if (steeringDeg >= LABEL.lateralDeg) return 'left';
-  if (steeringDeg <= -LABEL.lateralDeg) return 'right';
-  return 'straight';
-}
+const SIGNAL = { Off: 'off', BlinkLeft: 'left', BlinkRight: 'right' };
 
-export function longitudinalLabel(accel) {
-  if (accel >= LABEL.longitudinalMps2) return 'accelerate';
-  if (accel <= -LABEL.longitudinalMps2) return 'brake';
-  return 'steady';
+// Rows in the server's input shape. Accelerator pedal is left out: the app cannot read it.
+export const toRows = (timeline) =>
+  timeline.map((r) => ({ speedKph: r.speedKph, steeringDeg: r.steeringDeg, brake: r.brakePct > 0, turnSignal: SIGNAL[r.turnSignal] }));
+
+// levels[i] is the push at timeline[i]; the first SMOOTH samples have no history and read as none.
+export function pushLevels(timeline) {
+  const none = { forward: 0, backward: 0, left: 0, right: 0 };
+  return [...Array(SMOOTH).fill(none), ...directionLevels(physics(toRows(timeline)))];
 }
 
 // Rows run until t + horizon would pass the end of the timeline.
-export function deriveLabels(scenario, { horizonS = LABEL.horizonS } = {}) {
-  const { timeline } = scenario;
-  const accel = accelerations(timeline);
+export function deriveLabels(scenario, { horizonS = 2 } = {}) {
+  const levels = pushLevels(scenario.timeline);
   const offset = Math.round(horizonS / STEP_S);
   const rows = [];
-  for (let i = 0; i + offset < timeline.length; i++) {
-    const target = i + offset;
-    rows.push({
-      t: timeline[i].t,
-      targetT: timeline[target].t,
-      lateral: lateralLabel(timeline[target].steeringDeg),
-      longitudinal: longitudinalLabel(accel[target]),
-    });
+  for (let i = 0; i + offset < scenario.timeline.length; i++) {
+    rows.push({ t: scenario.timeline[i].t, targetT: scenario.timeline[i + offset].t, ...levels[i + offset] });
   }
   return rows;
 }
 
-// Merges rows into spans of constant label, for reading and for event-level comparison.
-export function labelSpans(rows, key) {
+// Spans where a direction is pushed at all, with their peak level.
+export function pushSpans(timeline, levels = pushLevels(timeline)) {
   const spans = [];
-  for (const row of rows) {
-    const current = spans[spans.length - 1];
-    if (current && current.value === row[key]) current.toT = row.t;
-    else spans.push({ value: row[key], fromT: row.t, toT: row.t });
+  for (const dir of DIRECTIONS) {
+    let open = null;
+    levels.forEach((l, i) => {
+      if (l[dir] > 0 && !open) open = { dir, fromT: timeline[i].t, peak: 0 };
+      if (open) open.peak = Math.max(open.peak, l[dir]);
+      if (l[dir] === 0 && open) {
+        spans.push({ ...open, toT: timeline[i - 1].t });
+        open = null;
+      }
+    });
+    if (open) spans.push({ ...open, toT: timeline.at(-1).t });
   }
-  return spans;
+  return spans.sort((a, b) => a.fromT - b.fromT);
 }
 
 function main(argv) {
   const HERE = dirname(fileURLToPath(import.meta.url));
   const fallback = resolve(HERE, '..', '..', 'app/src/main/assets/scenarios/gangnam-pangyo.json');
   const flag = argv.indexOf('--horizon');
-  const horizonS = flag >= 0 ? Number(argv[flag + 1]) : LABEL.horizonS;
+  const horizonS = flag >= 0 ? Number(argv[flag + 1]) : 2;
   const file = argv.find((arg, i) => !arg.startsWith('--') && (flag < 0 || i !== flag + 1)) ?? fallback;
-  const rows = deriveLabels(JSON.parse(readFileSync(file, 'utf8')), { horizonS });
+  const scenario = JSON.parse(readFileSync(file, 'utf8'));
   if (argv.includes('--json')) {
-    console.log(JSON.stringify(rows));
+    console.log(JSON.stringify(deriveLabels(scenario, { horizonS })));
     return;
   }
-  for (const key of ['lateral', 'longitudinal']) {
-    console.log(`${key} at t+${horizonS}s:`);
-    for (const span of labelSpans(rows, key)) console.log(`  ${span.fromT} to ${span.toT}  ${span.value}`);
-  }
+  for (const s of pushSpans(scenario.timeline)) console.log(`${s.fromT.toFixed(1)} to ${s.toT.toFixed(1)}  ${s.dir} peak ${s.peak}`);
 }
 
 if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {

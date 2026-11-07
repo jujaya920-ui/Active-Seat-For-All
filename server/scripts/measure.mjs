@@ -8,56 +8,34 @@
 import { parseArgs } from 'node:util';
 import { setTimeout as sleep } from 'node:timers/promises';
 
+import { DIRECTIONS, SAMPLE_COUNT } from '../lib/describe.js';
 import { buildJevRequest, callJev, mapJevResponse, validateInput } from '../lib/jev.js';
 
-const HORIZONS_SEC = [1.6, 1.8, 2.0, 2.2, 2.4];
-
-// Builds five samples, oldest first, 200 ms apart.
-const samples = (rows) =>
-  rows.map(([speedKph, steeringDeg, brake, turnSignal], i) => ({
-    ageMs: (rows.length - 1 - i) * 200,
-    speedKph,
-    steeringDeg,
-    brake,
-    turnSignal,
+// SAMPLE_COUNT samples, oldest first, 200 ms apart, from per-sample functions of the index.
+const samples = ({ kph, wheel = () => 0, brake = () => false, signal = 'off' }) =>
+  Array.from({ length: SAMPLE_COUNT }, (_, i) => ({
+    ageMs: (SAMPLE_COUNT - 1 - i) * 200,
+    speedKph: kph(i),
+    steeringDeg: wheel(i),
+    brake: brake(i),
+    turnSignal: signal,
   }));
 
 const INPUTS = {
   corner: {
-    signals: samples([
-      [42, 0, false, 'left'],
-      [41, 0, false, 'left'],
-      [40, 1, true, 'left'],
-      [38, 2, true, 'left'],
-      [36, 4, true, 'left'],
-    ]),
-    nextTurn: { type: 'TURN_LEFT', distanceM: 30 },
+    signals: samples({ kph: (i) => (i < 20 ? 45 : 45 - (i - 20)), wheel: (i) => (i < 28 ? 0 : (i - 28) * 3), brake: (i) => i >= 20, signal: 'left' }),
+    nextTurn: { type: 'TURN_LEFT', distanceM: 15 },
     frontEvent: null,
-    horizonsSec: HORIZONS_SEC,
   },
   brake: {
-    signals: samples([
-      [60, 0, false, 'off'],
-      [60, 0, false, 'off'],
-      [59, 0, false, 'off'],
-      [58, 0, true, 'off'],
-      [55, 0, true, 'off'],
-    ]),
+    signals: samples({ kph: (i) => (i < 27 ? 60 : 60 - (i - 27) * 1.5), brake: (i) => i >= 27 }),
     nextTurn: null,
     frontEvent: { type: 'CONGESTION', distanceM: 60 },
-    horizonsSec: HORIZONS_SEC,
   },
   accel: {
-    signals: samples([
-      [20, 0, false, 'off'],
-      [23, 0, false, 'off'],
-      [26, 0, false, 'off'],
-      [30, 0, false, 'off'],
-      [34, 0, false, 'off'],
-    ]),
+    signals: samples({ kph: (i) => (i < 25 ? 0 : (i - 25) * 2.5) }),
     nextTurn: null,
     frontEvent: null,
-    horizonsSec: HORIZONS_SEC,
   },
 };
 
@@ -95,10 +73,7 @@ function parseOptions() {
 function directCaller() {
   const apiKey = process.env.AI_GATEWAY_API_KEY;
   if (!apiKey) usage('AI_GATEWAY_API_KEY is not set');
-  return async (input) => {
-    const jev = await callJev(buildJevRequest(input), apiKey);
-    return mapJevResponse(jev, input.horizonsSec);
-  };
+  return async (input) => mapJevResponse(await callJev(buildJevRequest(input), apiKey)).push;
 }
 
 function urlCaller(url) {
@@ -112,12 +87,11 @@ function urlCaller(url) {
     });
     const body = await response.json();
     if (!response.ok) throw new Error(`HTTP ${response.status}: ${body.error}`);
-    return body.predictions;
+    return body.push;
   };
 }
 
-const format = (v) => v.toFixed(2);
-const rangeOf = (values) => `${format(Math.min(...values))}~${format(Math.max(...values))}`;
+const range = (values) => `${Math.min(...values).toFixed(2)}~${Math.max(...values).toFixed(2)}`;
 
 function timing(values) {
   const sorted = [...values].sort((a, b) => a - b);
@@ -126,30 +100,16 @@ function timing(values) {
   return `min ${sorted[0]} / median ${median} / mean ${Math.round(mean)} / max ${sorted.at(-1)} ms`;
 }
 
-// Counts how often each value won, then shows the spread of the most common value.
-function stability(answers) {
-  const counts = Map.groupBy(answers, (a) => a.value);
-  const [value, wins] = [...counts].sort((a, b) => b[1].length - a[1].length)[0];
-  const others = [...counts].filter(([v]) => v !== value).map(([v, l]) => `${v} ${l.length}`);
-  const suffix = others.length ? ` (also ${others.join(', ')})` : '';
-  return (
-    `${value} ${wins.length}/${answers.length}${suffix}, ` +
-    `p ${rangeOf(wins.map((a) => a.probability))}, conf ${rangeOf(wins.map((a) => a.confidence))}`
-  );
-}
-
 function report(name, roundTrips, results, failures) {
   console.log(`\n== ${name}: ${results.length} ok, ${failures.length} failed`);
   for (const message of new Set(failures)) console.log(`  failure: ${message}`);
   if (results.length === 0) return;
 
   console.log(`  round trip: ${timing(roundTrips)}`);
-  HORIZONS_SEC.forEach((horizon, i) => {
-    const atHorizon = results.map((predictions) => predictions[i]);
-    console.log(`  ${horizon}s lateral:      ${stability(atHorizon.map((p) => p.lateral))}`);
-    console.log(`  ${horizon}s longitudinal: ${stability(atHorizon.map((p) => p.longitudinal))}`);
-  });
-  console.log(`  hint: ${rangeOf(results.map((predictions) => predictions[0].hint))}`);
+  for (const dir of DIRECTIONS) {
+    const levels = results.map((push) => push[dir].level);
+    console.log(`  ${dir.padEnd(8)} pOn ${range(results.map((push) => push[dir].pOn))}, level ${[...new Set(levels)].join('/')}`);
+  }
 }
 
 async function main() {
@@ -170,9 +130,8 @@ async function main() {
       if (run > 0) await sleep(pauseMs);
       const startedAt = performance.now();
       try {
-        const predictions = await predict(input);
+        results.push(await predict(input));
         roundTrips.push(Math.round(performance.now() - startedAt));
-        results.push(predictions);
       } catch (error) {
         failures.push(error.message);
       }

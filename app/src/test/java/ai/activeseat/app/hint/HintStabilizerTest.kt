@@ -1,185 +1,150 @@
 package ai.activeseat.app.hint
 
-import ai.activeseat.app.prediction.AxisPrediction
 import ai.activeseat.app.prediction.PredictResult
-import ai.activeseat.app.prediction.Prediction
+import ai.activeseat.app.prediction.PushForecast
+import ai.activeseat.app.prediction.PushPrediction
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertNull
 import org.junit.Test
 
 class HintStabilizerTest {
     private var now = 0L
-    private val stabilizer = HintStabilizer(HintConfig(onProbability = 0.6), { now }, RttTracker())
+    private val stabilizer = HintStabilizer(HintConfig(), { now })
 
-    private fun prediction(
-        lateral: String = "straight",
-        lateralP: Double = 0.9,
-        longitudinal: String = "steady",
-        longitudinalP: Double = 0.9,
-        horizonSec: Double = 2.0,
-        lateralStrength: Double = 0.7,
-        longitudinalStrength: Double = 0.7,
-    ) = Prediction(
-        horizonSec,
-        AxisPrediction(lateral, lateralP, lateralStrength, mapOf(lateral to lateralP)),
-        AxisPrediction(longitudinal, longitudinalP, longitudinalStrength, mapOf(longitudinal to longitudinalP)),
-        0.0,
-    )
+    private val quiet = PushPrediction(0.05, 1, 1.0)
 
-    private fun success(vararg predictions: Prediction, rttMs: Long = 500) =
-        PredictResult.Success(rttMs, 0, predictions.toList())
+    private fun push(pOn: Double, level: Int = 2) = PushPrediction(pOn, level, level.toDouble())
 
-    private fun lateralResult(value: String, p: Double) = stabilizer.onResult(success(prediction(value, p)))
+    private fun forecast(
+        forward: PushPrediction = quiet,
+        backward: PushPrediction = quiet,
+        left: PushPrediction = quiet,
+        right: PushPrediction = quiet,
+    ) = PushForecast(2.0, forward, backward, left, right)
 
-    private fun longitudinalResult(value: String, p: Double) =
-        stabilizer.onResult(success(prediction(longitudinal = value, longitudinalP = p)))
+    private fun success(forecast: PushForecast, rttMs: Long = 300) = PredictResult.Success(rttMs, 0, forecast)
 
-    @Test fun neutralStaysOff() = assertEquals(Hint(), lateralResult("straight", 0.95))
-
-    @Test fun staysOffJustBelowOnThreshold() = assertEquals(LateralCue.NONE, lateralResult("left", 0.599).lateral)
-
-    @Test fun turnsOnAtOnThreshold() = assertEquals(LateralCue.LEFT, lateralResult("left", 0.6).lateral)
-
-    @Test fun hysteresisBandDoesNotTurnOn() = assertEquals(LateralCue.NONE, lateralResult("left", 0.5).lateral)
-
-    @Test fun longitudinalTurnsOnAtOnThreshold() {
-        assertEquals(LongitudinalCue.BRAKE, longitudinalResult("brake", 0.6).longitudinal)
+    /** Sends a request at `now`, answers it after `rttMs`, then waits until the apply moment and ticks. */
+    private fun applied(forecast: PushForecast, rttMs: Long = 300): Hint {
+        val start = now
+        now += rttMs
+        stabilizer.onResult(success(forecast, rttMs), start)
+        now = maxOf(now, start + 1000)
+        return stabilizer.tick()
     }
 
-    @Test fun strengthComesFromThePredictionNotTheProbability() {
-        val hint = stabilizer.onResult(success(prediction("left", 0.6, "brake", 0.95, lateralStrength = 1.0, longitudinalStrength = 0.4)))
-        assertEquals(1.0, hint.lateralStrength, 1e-9)
-        assertEquals(0.4, hint.longitudinalStrength, 1e-9)
-    }
+    private fun brake(pOn: Double, level: Int = 2) = applied(forecast(forward = push(pOn, level)))
 
-    @Test fun strengthFollowsEachNewPredictionWhileOn() {
-        stabilizer.onResult(success(prediction("left", 0.8, lateralStrength = 0.5)))
-        now += 100
-        assertEquals(0.9, stabilizer.onResult(success(prediction("left", 0.5, lateralStrength = 0.9))).lateralStrength, 1e-9)
-    }
+    // Thresholds.
+
+    @Test fun quietForecastStaysOff() = assertEquals(Hint(), applied(forecast()))
+
+    @Test fun staysOffJustBelowOnThreshold() = assertEquals(LongitudinalCue.NONE, brake(0.549).longitudinal)
+
+    @Test fun turnsOnAtOnThreshold() = assertEquals(LongitudinalCue.BRAKE, brake(0.55).longitudinal)
+
+    @Test fun hysteresisBandDoesNotTurnOn() = assertEquals(LongitudinalCue.NONE, brake(0.5).longitudinal)
 
     @Test fun hysteresisBandKeepsCueOn() {
-        lateralResult("left", 0.7)
-        now += 1000
-        assertEquals(LateralCue.LEFT, lateralResult("left", 0.5).lateral)
+        brake(0.8)
+        assertEquals(LongitudinalCue.BRAKE, brake(0.45).longitudinal)
     }
 
     @Test fun releasesBelowOffThresholdAfterHold() {
-        lateralResult("left", 0.7)
+        brake(0.8)
+        // Applied exactly 1000 ms after turning on, so the hold has run out.
+        assertEquals(Hint(), brake(0.449))
+    }
+
+    @Test fun levelFollowsEachResultWhileOn() {
+        brake(0.8, level = 1)
+        assertEquals(0.75, brake(0.5, level = 3).longitudinalStrength, 1e-9)
+    }
+
+    // Minimum hold.
+
+    @Test fun minHoldKeepsCueAndLevel() {
+        val config = HintConfig(minHoldMs = 1500)
+        val held = HintStabilizer(config, { now })
+        held.onResult(success(forecast(forward = push(0.8, level = 3))), now)
         now += 1000
-        assertEquals(Hint(), lateralResult("left", 0.449))
-    }
-
-    @Test fun releaseWaitsForMinHoldAndKeepsStrength() {
-        val on = lateralResult("left", 0.8)
-        now += 999
-        assertEquals(on, lateralResult("straight", 0.9))
-        now += 1
-        assertEquals(Hint(), lateralResult("straight", 0.9))
-    }
-
-    @Test fun lowProbabilityDuringHoldKeepsStrength() {
-        val on = lateralResult("left", 0.8)
-        now += 500
-        assertEquals(on, lateralResult("left", 0.1))
-    }
-
-    @Test fun oppositeBelowOnThresholdIsARelease() {
-        val on = lateralResult("left", 0.8)
-        now += 500
-        assertEquals(on, lateralResult("right", 0.59))
-        now += 500
-        assertEquals(Hint(), lateralResult("right", 0.59))
-    }
-
-    @Test fun directReversalIgnoresMinHold() {
-        lateralResult("left", 0.8)
-        now += 1
-        val hint = lateralResult("right", 0.6)
-        assertEquals(LateralCue.RIGHT, hint.lateral)
-    }
-
-    @Test fun directLongitudinalReversalIgnoresMinHold() {
-        longitudinalResult("accelerate", 0.8)
-        now += 1
-        assertEquals(LongitudinalCue.BRAKE, longitudinalResult("brake", 0.6).longitudinal)
-    }
-
-    @Test fun reversalRestartsMinHold() {
-        lateralResult("left", 0.8)
-        now += 900
-        val reversed = lateralResult("right", 0.8)
-        now += 900
-        assertEquals(reversed, lateralResult("straight", 0.9))
-    }
-
-    @Test fun axesAreIndependent() {
-        stabilizer.onResult(success(prediction("left", 0.8, "steady", 0.9)))
-        now += 500
-        val hint = stabilizer.onResult(success(prediction("straight", 0.9, "brake", 0.8)))
-        assertEquals(LateralCue.LEFT, hint.lateral)
-        assertEquals(LongitudinalCue.BRAKE, hint.longitudinal)
-        now += 500
-        val later = stabilizer.onResult(success(prediction("straight", 0.9, "brake", 0.8)))
-        assertEquals(LateralCue.NONE, later.lateral)
-        assertEquals(LongitudinalCue.BRAKE, later.longitudinal)
-    }
-
-    @Test fun unknownValuesAreNeutral() {
-        assertEquals(Hint(), stabilizer.onResult(success(prediction("LEFT", 0.9, "boost", 0.9))))
-    }
-
-    @Test fun unknownValueReleasesAfterHold() {
-        lateralResult("left", 0.8)
+        val on = held.tick()
+        held.onResult(success(forecast()), now)
         now += 1000
-        assertEquals(Hint(), lateralResult("sideways", 0.9))
+        // Applied 1000 ms after turning on, inside the 1500 ms hold.
+        assertEquals(on, held.tick())
+        held.onResult(success(forecast()), now)
+        now += 1000
+        assertEquals(Hint(), held.tick())
     }
 
-    @Test fun nullTurnsOffDuringHold() = assertOffImmediately(null)
+    // Timing.
 
-    @Test fun notConfiguredTurnsOffDuringHold() = assertOffImmediately(PredictResult.NotConfigured)
-
-    @Test fun failureTurnsOffDuringHold() = assertOffImmediately(PredictResult.Failure("down"))
-
-    @Test fun emptyPredictionsTurnOffDuringHold() = assertOffImmediately(success())
-
-    private fun assertOffImmediately(result: PredictResult?) {
-        stabilizer.onResult(success(prediction("left", 0.8, "brake", 0.8)))
-        now += 1
-        assertEquals(Hint(), stabilizer.onResult(result))
+    @Test fun appliesAtRequestStartPlusOneSecondNotEarlier() {
+        val start = now
+        now += 200
+        assertEquals(Hint(), stabilizer.onResult(success(forecast(forward = push(0.9)), 200), start))
+        assertEquals(start + 1000, stabilizer.pendingApplyAtMs())
+        now = start + 999
+        assertEquals(Hint(), stabilizer.tick())
+        now = start + 1000
+        assertEquals(LongitudinalCue.BRAKE, stabilizer.tick().longitudinal)
+        assertNull(stabilizer.pendingApplyAtMs())
     }
 
-    @Test fun emptyPredictionsDoNotRecordRtt() {
-        val rtt = RttTracker()
-        HintStabilizer(HintConfig(onProbability = 0.6), { now }, rtt).onResult(success(rttMs = 100))
-        assertEquals(500L, rtt.estimateMs())
+    @Test fun lateTickStillApplies() {
+        val start = now
+        stabilizer.onResult(success(forecast(forward = push(0.9))), start)
+        now = start + 1150
+        assertEquals(LongitudinalCue.BRAKE, stabilizer.tick().longitudinal)
     }
 
-    @Test fun tickKeepsHintUntilStale() {
-        val on = lateralResult("left", 0.8)
+    @Test fun dueOlderResultIsAppliedBeforeTheNextArrives() {
+        val first = now
+        stabilizer.onResult(success(forecast(forward = push(0.9))), first)
+        // No tick between: the next answer arrives after the first one's apply moment.
+        now = first + 1100
+        stabilizer.onResult(success(forecast()), first + 1000)
+        assertEquals(LongitudinalCue.BRAKE, stabilizer.tick().longitudinal)
+    }
+
+    @Test fun roundTripAtLimitIsApplied() {
+        assertEquals(LongitudinalCue.BRAKE, applied(forecast(forward = push(0.9)), rttMs = 1000).longitudinal)
+    }
+
+    @Test fun roundTripOverLimitIsDropped() {
+        assertEquals(Hint(), applied(forecast(forward = push(0.9)), rttMs = 1001))
+        assertNull(stabilizer.pendingApplyAtMs())
+    }
+
+    @Test fun timeBeforeTheCallCountsTowardTheLimit() {
+        // The call itself reports 300 ms, but the window was read 1200 ms ago.
+        val start = now
+        now += 1200
+        stabilizer.onResult(success(forecast(forward = push(0.9)), rttMs = 300), start)
+        assertEquals(Hint(), stabilizer.tick())
+    }
+
+    @Test fun droppedResultDoesNotTurnOff() {
+        val on = brake(0.9)
+        assertEquals(on, applied(forecast(), rttMs = 1500))
+    }
+
+    @Test fun holdsUntilStale() {
+        val on = brake(0.9)
         now += 2000
         assertEquals(on, stabilizer.tick())
-    }
-
-    @Test fun tickTurnsOffWhenStale() {
-        lateralResult("left", 0.8)
-        now += 2001
+        now += 1
         assertEquals(Hint(), stabilizer.tick())
     }
 
     @Test fun staleOffIgnoresMinHold() {
-        val longHold = HintStabilizer(HintConfig(onProbability = 0.6, minHoldMs = 10_000), { now }, RttTracker())
-        longHold.onResult(success(prediction("left", 0.8)))
+        val longHold = HintStabilizer(HintConfig(minHoldMs = 10_000), { now })
+        longHold.onResult(success(forecast(forward = push(0.9))), now)
+        now += 1000
+        assertEquals(LongitudinalCue.BRAKE, longHold.tick().longitudinal)
         now += 2001
         assertEquals(Hint(), longHold.tick())
-    }
-
-    @Test fun tickDoesNotReleaseOnMinHold() {
-        // Only a new result can release: a tick has no fresh probability to judge.
-        val on = lateralResult("left", 0.8)
-        now += 500
-        lateralResult("straight", 0.9)
-        now += 1000
-        assertEquals(on, stabilizer.tick())
     }
 
     @Test fun tickBeforeAnyResultIsOff() {
@@ -187,84 +152,104 @@ class HintStabilizerTest {
         assertEquals(Hint(), stabilizer.tick())
     }
 
-    @Test fun cueReturnsAfterStaleOff() {
-        lateralResult("left", 0.8)
-        now += 2001
-        stabilizer.tick()
-        assertEquals(LateralCue.LEFT, lateralResult("left", 0.6).lateral)
+    @Test fun failureTurnsOffAtOnceAndDropsPending() {
+        brake(0.9)
+        stabilizer.onResult(success(forecast(forward = push(0.9))), now)
+        now += 1
+        assertEquals(Hint(), stabilizer.onResult(PredictResult.Failure("down"), now))
+        assertNull(stabilizer.pendingApplyAtMs())
+        now += 1000
+        assertEquals(Hint(), stabilizer.tick())
+    }
+
+    @Test fun nullTurnsOffAtOnce() {
+        brake(0.9)
+        now += 1
+        assertEquals(Hint(), stabilizer.onResult(null, now))
+    }
+
+    @Test fun notConfiguredTurnsOffAtOnce() {
+        brake(0.9)
+        now += 1
+        assertEquals(Hint(), stabilizer.onResult(PredictResult.NotConfigured, now))
     }
 
     @Test fun cueReturnsAfterFailure() {
-        lateralResult("left", 0.8)
-        stabilizer.onResult(PredictResult.Failure("down"))
-        assertEquals(LateralCue.LEFT, lateralResult("left", 0.6).lateral)
+        brake(0.9)
+        stabilizer.onResult(PredictResult.Failure("down"), now)
+        assertEquals(LongitudinalCue.BRAKE, brake(0.6).longitudinal)
     }
 
-    @Test fun probabilitiesComeFromTheChosenHorizon() {
-        fun axis(vararg p: Pair<String, Double>) = AxisPrediction("straight", 0.5, 0.0, mapOf(*p))
-        val near = Prediction(2.0, axis("left" to 0.1, "right" to 0.2), axis("accelerate" to 0.3, "brake" to 0.4), 0.0)
-        val far = Prediction(9.0, axis("left" to 0.9), axis("brake" to 0.9), 0.0)
-        stabilizer.onResult(success(near, far))
-        assertEquals(MotionProbabilities(forward = 0.3, back = 0.4, left = 0.1, right = 0.2), stabilizer.probabilities())
+    // Conflicts and mapping.
+
+    @Test fun higherProbabilityWinsAnAxisOverHigherLevel() {
+        // Jev often raises both sides of a turn; the real side ranks higher.
+        val hint = applied(forecast(left = push(0.6, level = 3), right = push(0.8, level = 2)))
+        assertEquals(LateralCue.LEFT, hint.lateral)
+        assertEquals(0.5, hint.lateralStrength, 1e-9)
+    }
+
+    @Test fun equalProbabilityFallsBackToLevel() {
+        val hint = applied(forecast(forward = push(0.9, level = 2), backward = push(0.9, level = 3)))
+        assertEquals(LongitudinalCue.ACCELERATE, hint.longitudinal)
+        assertEquals(0.75, hint.longitudinalStrength, 1e-9)
+    }
+
+    @Test fun fullTieCancelsTheAxisOnly() {
+        val hint = applied(forecast(left = push(0.9, level = 2), right = push(0.9, level = 2), forward = push(0.9)))
+        assertEquals(LateralCue.NONE, hint.lateral)
+        assertEquals(0.0, hint.lateralStrength, 0.0)
+        assertEquals(LongitudinalCue.BRAKE, hint.longitudinal)
+    }
+
+    @Test fun heldSideComparesItsLatestProbability() {
+        // Left turned on first; next, right is the more likely side while left still holds.
+        applied(forecast(left = push(0.9)))
+        val hint = applied(forecast(left = push(0.5), right = push(0.7)))
+        assertEquals(LateralCue.LEFT, hint.lateral)
+    }
+
+    @Test fun levelMapsToQuarterSteps() {
+        assertEquals(
+            listOf(0.25, 0.5, 0.75, 1.0),
+            (1..4).map { level -> HintStabilizer(HintConfig(), { now }).run {
+                onResult(success(forecast(forward = push(0.9, level))), now)
+                now += 1000
+                tick().longitudinalStrength
+            } },
+        )
+    }
+
+    @Test fun bodyPushMapsToCarManeuver() {
+        fun first(forecast: PushForecast) = HintStabilizer(HintConfig(), { now }).run {
+            onResult(success(forecast), now)
+            now += 1000
+            tick()
+        }
+        assertEquals(Hint(longitudinal = LongitudinalCue.BRAKE, longitudinalStrength = 0.5), first(forecast(forward = push(0.9))))
+        assertEquals(LongitudinalCue.ACCELERATE, first(forecast(backward = push(0.9))).longitudinal)
+        assertEquals(Hint(lateral = LateralCue.LEFT, lateralStrength = 0.5), first(forecast(right = push(0.9))))
+        assertEquals(LateralCue.RIGHT, first(forecast(left = push(0.9))).lateral)
+    }
+
+    @Test fun probabilitiesShowTheCarManeuver() {
+        applied(forecast(forward = push(0.1), backward = push(0.2), left = push(0.3), right = push(0.4)))
+        assertEquals(MotionProbabilities(forward = 0.2, back = 0.1, left = 0.4, right = 0.3), stabilizer.probabilities())
+    }
+
+    @Test fun probabilitiesWaitForTheApplyMoment() {
+        stabilizer.onResult(success(forecast(forward = push(0.9))), now)
+        assertEquals(MotionProbabilities(), stabilizer.probabilities())
     }
 
     @Test fun probabilitiesClearOnFailureAndWhenStale() {
-        stabilizer.onResult(success(prediction("left", 0.8).copy(lateral = AxisPrediction("left", 0.8, 0.5, mapOf("left" to 0.8)))))
-        stabilizer.onResult(PredictResult.Failure("down"))
+        brake(0.8)
+        stabilizer.onResult(PredictResult.Failure("down"), now)
         assertEquals(MotionProbabilities(), stabilizer.probabilities())
 
-        stabilizer.onResult(success(prediction("left", 0.8).copy(lateral = AxisPrediction("left", 0.8, 0.5, mapOf("left" to 0.8)))))
+        brake(0.8)
         now += 2001
         stabilizer.tick()
         assertEquals(MotionProbabilities(), stabilizer.probabilities())
-    }
-
-    private val horizons = arrayOf(
-        prediction("left", horizonSec = 1.0),
-        prediction("right", horizonSec = 2.0),
-        prediction(longitudinal = "brake", horizonSec = 3.0),
-    )
-
-    private fun settledAt(rttMs: Long, config: HintConfig = HintConfig(onProbability = 0.6)) =
-        HintStabilizer(config, { now }, RttTracker().apply { repeat(5) { record(rttMs) } })
-
-    @Test fun picksNearestHorizonAtLowRtt() {
-        // 1.5 + 0.1 = 1.6, nearest 2.0.
-        assertEquals(LateralCue.RIGHT, settledAt(100).onResult(success(*horizons, rttMs = 100)).lateral)
-    }
-
-    @Test fun picksNearestHorizonAtHighRtt() {
-        // 1.5 + 1.2 = 2.7, nearest 3.0.
-        val hint = settledAt(1200).onResult(success(*horizons, rttMs = 1200))
-        assertEquals(LongitudinalCue.BRAKE, hint.longitudinal)
-        assertEquals(LateralCue.NONE, hint.lateral)
-    }
-
-    @Test fun picksShortHorizonWhenLeadIsShort() {
-        val hint = settledAt(0, HintConfig(onProbability = 0.6, displayLeadSec = 0.5)).onResult(success(*horizons, rttMs = 0))
-        assertEquals(LateralCue.LEFT, hint.lateral)
-    }
-
-    @Test fun targetIncludesThisResultsRtt() {
-        // The estimate is 500 before this result and 1200 after it, so only the latter reaches 3.0.
-        val rtt = RttTracker().apply { record(1200) }
-        val hint = HintStabilizer(HintConfig(onProbability = 0.6), { now }, rtt).onResult(success(*horizons, rttMs = 1200))
-        assertEquals(LongitudinalCue.BRAKE, hint.longitudinal)
-    }
-
-    @Test fun coldStartOutlierDoesNotChangeHorizon() {
-        // The median keeps 500, so the target is 2.0 and not 5.5.
-        assertEquals(LateralCue.RIGHT, stabilizer.onResult(success(*horizons, rttMs = 4000)).lateral)
-    }
-
-    @Test fun tieKeepsFirstListed() {
-        val hint = stabilizer.onResult(
-            success(prediction("left", horizonSec = 1.5), prediction("right", horizonSec = 2.5)),
-        )
-        assertEquals(LateralCue.LEFT, hint.lateral)
-    }
-
-    @Test fun singleHorizonIsUsedWhateverItsDistance() {
-        assertEquals(LateralCue.LEFT, stabilizer.onResult(success(prediction("left", horizonSec = 9.0))).lateral)
     }
 }

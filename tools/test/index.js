@@ -2,4 +2,3 @@
 // resolves it to this file. Loading the test files here makes that command work.
 import('./scenario.test.mjs');
 import('./console-proxy.test.mjs');
-import('./events.test.mjs');

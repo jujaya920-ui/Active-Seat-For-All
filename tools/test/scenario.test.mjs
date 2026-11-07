@@ -23,7 +23,7 @@ import {
   steeringDegFor,
   turnType,
 } from '../scenario/from-route.mjs';
-import { deriveLabels, labelSpans, lateralLabel, longitudinalLabel } from '../scenario/labels.mjs';
+import { deriveLabels, pushLevels, pushSpans } from '../scenario/labels.mjs';
 import { fitRoute } from '../scenario/projection.mjs';
 import { validateScenario } from '../scenario/validate.mjs';
 
@@ -288,42 +288,34 @@ test('reports an absent map image as a warning, not an error', () => {
   assert.match(report.warnings.join(), /map image/);
 });
 
-test('label thresholds use left-positive steering', () => {
-  assert.equal(lateralLabel(100), 'left');
-  assert.equal(lateralLabel(-100), 'right');
-  assert.equal(lateralLabel(5), 'straight');
-  assert.equal(longitudinalLabel(2), 'accelerate');
-  assert.equal(longitudinalLabel(-2), 'brake');
-  assert.equal(longitudinalLabel(0.1), 'steady');
+test('push labels follow the body: braking forward, a left turn right', () => {
+  const row = (t, speedKph, steeringDeg) => ({ t, speedKph, steeringDeg, brakePct: 0, turnSignal: 'Off' });
+  const braking = Array.from({ length: 12 }, (_, i) => row(i * 0.2, 60 - i * 2, 0));
+  assert.ok(pushLevels(braking).at(-1).forward > 0);
+  const turning = Array.from({ length: 12 }, (_, i) => row(i * 0.2, 30, 120));
+  assert.ok(pushLevels(turning).at(-1).right > 0);
 });
 
 test('labels look exactly horizon seconds ahead', () => {
-  const row = (t, speedKph, steeringDeg) => ({ t, speedKph, steeringDeg });
-  const timeline = [row(0, 36, 0), row(0.2, 36, 0), row(0.4, 36, 90), row(0.6, 43.2, -90), row(0.8, 43.2, 0)];
-  const rows = deriveLabels({ timeline }, { horizonS: 0.4 });
-  assert.deepEqual(rows, [
-    { t: 0, targetT: 0.4, lateral: 'left', longitudinal: 'accelerate' },
-    { t: 0.2, targetT: 0.6, lateral: 'right', longitudinal: 'steady' },
-    { t: 0.4, targetT: 0.8, lateral: 'straight', longitudinal: 'steady' },
-  ]);
-});
-
-test('labels stop where t + horizon leaves the timeline', () => {
   const scenario = fresh();
-  const rows = deriveLabels(scenario);
+  const rows = deriveLabels(scenario, { horizonS: 2 });
+  const levels = pushLevels(scenario.timeline);
   assert.equal(rows.length, scenario.timeline.length - 10);
+  rows.slice(0, 50).forEach((r, i) => assert.equal(r.forward, levels[i + 10].forward));
   assert.equal(rows.at(-1).targetT, scenario.timeline.at(-1).t);
 });
 
-test('every corner appears 2 s early in the labels, in order', () => {
+// A slow, gentle corner pushes too little to feel, so only corners that reach a weak push count.
+test('every corner a passenger can feel shows up as a sideways push span', () => {
   const scenario = fresh();
-  const { timeline } = scenario;
-  const rows = deriveLabels(scenario);
-  const lateral = labelSpans(rows, 'lateral').filter((span) => span.value !== 'straight');
-  const { corners } = detectManeuvers(timeline);
-  assert.equal(lateral.length, corners.length);
-  lateral.forEach((span, i) => {
-    assert.equal(span.value, corners[i].direction);
-    assert.ok(Math.abs(span.fromT + LABEL.horizonS - timeline[corners[i].startI].t) < 1e-6);
-  });
+  const spans = pushSpans(scenario.timeline).filter((s) => s.dir === 'left' || s.dir === 'right');
+  const levels = pushLevels(scenario.timeline);
+  const felt = (c) => levels.slice(c.startI, c.endI + 1).some((l) => l.left || l.right);
+  const corners = detectManeuvers(scenario.timeline).corners.filter(felt);
+  assert.ok(corners.length > 0);
+  for (const c of corners) {
+    const at = scenario.timeline[c.startI].t;
+    const side = c.direction === 'left' ? 'right' : 'left';
+    assert.ok(spans.some((s) => s.dir === side && s.toT >= at && s.fromT <= at + 6), `corner at ${at}`);
+  }
 });

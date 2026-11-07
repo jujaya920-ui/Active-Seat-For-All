@@ -2,10 +2,12 @@ import assert from 'node:assert/strict';
 import { afterEach, beforeEach, describe, it, mock } from 'node:test';
 
 import handler from '../api/predict.js';
+import { SAMPLE_COUNT } from '../lib/describe.js';
 import { GATEWAY_URL, JEV_MODEL } from '../lib/jev.js';
 
 const TOKEN = 'test-token';
 const KEY = 'test-key';
+const DIRS = ['forward', 'backward', 'left', 'right'];
 
 const signal = (ageMs, extra = {}) => ({
   ageMs,
@@ -16,37 +18,30 @@ const signal = (ageMs, extra = {}) => ({
   ...extra,
 });
 
+const ages = () => Array.from({ length: SAMPLE_COUNT }, (_, i) => (SAMPLE_COUNT - 1 - i) * 200);
+
 const validInput = () => ({
-  signals: [800, 600, 400, 200, 0].map((age) => signal(age)),
+  signals: ages().map((age) => signal(age)),
   nextTurn: { type: 'TURN_LEFT', distanceM: 80 },
   frontEvent: { type: 'CONGESTION', distanceM: 200 },
-  horizonsSec: [1.6, 2.0],
 });
 
-// Documented shape of POST /v1/evaluate, with confidence where the AI SDK guide puts it.
+const levelProbabilities = (weak, moderate, strong, veryStrong) => ({ weak, moderate, strong, 'very strong': veryStrong });
+
+// Documented shape of POST /v1/evaluate: one choice answer per question.
 const jevResponse = () => ({
   model: JEV_MODEL,
   answers: {
-    lateral_0: { type: 'choice', choice: 'left', probabilities: { left: 0.8, right: 0.1, straight: 0.1 } },
-    longitudinal_0: { type: 'choice', choice: 'brake', probabilities: { accelerate: 0.1, brake: 0.7, steady: 0.2 } },
-    lateral_1: { type: 'choice', choice: 'straight', probabilities: { left: 0.3, right: 0.1, straight: 0.6 } },
-    longitudinal_1: { type: 'choice', choice: 'steady', probabilities: { accelerate: 0.1, brake: 0.4, steady: 0.5 } },
-    lateral_strength: { type: 'choice', choice: 'gentle', probabilities: { gentle: 0.75, firm: 0.25 } },
-    longitudinal_strength: { type: 'choice', choice: 'firm', probabilities: { gentle: 0.3, firm: 0.7 } },
+    forward_on: { type: 'choice', choice: 'yes', probabilities: { yes: 0.88, no: 0.12 } },
+    forward_level: { type: 'choice', choice: 'moderate', probabilities: levelProbabilities(0.2, 0.55, 0.22, 0.03) },
+    backward_on: { type: 'choice', choice: 'no', probabilities: { yes: 0.04, no: 0.96 } },
+    backward_level: { type: 'choice', choice: 'weak', probabilities: levelProbabilities(0.7, 0.25, 0.05, 0) },
+    left_on: { type: 'choice', choice: 'no', probabilities: { yes: 0.06, no: 0.94 } },
+    left_level: { type: 'choice', choice: 'weak', probabilities: levelProbabilities(0.8, 0.15, 0.05, 0) },
+    right_on: { type: 'choice', choice: 'yes', probabilities: { yes: 0.62, no: 0.38 } },
+    right_level: { type: 'choice', choice: 'moderate', probabilities: levelProbabilities(0.3, 0.5, 0.18, 0.02) },
   },
-  usage: { inputTokens: 400, outputTokens: 60 },
-  providerMetadata: {
-    typesafe: {
-      confidence: {
-        lateral_0: 0.7,
-        longitudinal_0: 0.6,
-        lateral_1: 0.5,
-        longitudinal_1: 0.4,
-        lateral_strength: 0.5,
-        longitudinal_strength: 0.5,
-      },
-    },
-  },
+  usage: { inputTokens: 1500, outputTokens: 120 },
 });
 
 const post = (body, headers = { 'x-demo-token': TOKEN }) =>
@@ -58,11 +53,9 @@ const post = (body, headers = { 'x-demo-token': TOKEN }) =>
     }),
   );
 
-const mockGateway = (impl) => {
-  const fake = mock.method(globalThis, 'fetch', impl);
-  return fake;
-};
+const mockGateway = (impl) => mock.method(globalThis, 'fetch', impl);
 const replyWith = (body, status = 200) => async () => Response.json(body, { status });
+const sentBody = (fake) => JSON.parse(fake.mock.calls[0].arguments[1].body);
 
 beforeEach(() => {
   process.env.DEMO_TOKEN = TOKEN;
@@ -104,27 +97,19 @@ describe('auth', () => {
 });
 
 describe('validation', () => {
+  const withFirst = (extra) => ({ ...validInput(), signals: [signal(ages()[0], extra), ...validInput().signals.slice(1)] });
   const cases = {
     'malformed JSON': '{',
     'non-object body': [],
     'too few signals': { ...validInput(), signals: validInput().signals.slice(1) },
-    'too many signals': { ...validInput(), signals: [signal(1000), ...validInput().signals] },
+    'too many signals': { ...validInput(), signals: [signal(99999), ...validInput().signals] },
     'newest first signals': { ...validInput(), signals: validInput().signals.reverse() },
-    'non-numeric speed': {
-      ...validInput(),
-      signals: [signal(800, { speedKph: '42' }), ...validInput().signals.slice(1)],
-    },
-    'non-boolean brake': {
-      ...validInput(),
-      signals: [signal(800, { brake: 1 }), ...validInput().signals.slice(1)],
-    },
+    'non-numeric speed': withFirst({ speedKph: '42' }),
+    'non-boolean brake': withFirst({ brake: 1 }),
     'absent nextTurn': { ...validInput(), nextTurn: undefined },
     'absent frontEvent': { ...validInput(), frontEvent: undefined },
     'malformed nextTurn': { ...validInput(), nextTurn: { type: 'TURN_LEFT' } },
     'malformed frontEvent': { ...validInput(), frontEvent: 'CONGESTION' },
-    'empty horizons': { ...validInput(), horizonsSec: [] },
-    'seven horizons': { ...validInput(), horizonsSec: [1, 2, 3, 4, 5, 6, 7] },
-    'non-positive horizon': { ...validInput(), horizonsSec: [0] },
   };
 
   for (const [name, body] of Object.entries(cases)) {
@@ -142,201 +127,80 @@ describe('validation', () => {
     const response = await post({ ...validInput(), nextTurn: null, frontEvent: null });
     assert.equal(response.status, 200);
   });
+
+  it('ignores a leftover horizonsSec field', async () => {
+    mockGateway(replyWith(jevResponse()));
+    const response = await post({ ...validInput(), horizonsSec: [1.6, 2.0] });
+    assert.equal(response.status, 200);
+  });
 });
 
 describe('jev request', () => {
-  it('makes one authenticated call with all questions', async () => {
+  it('makes one authenticated call with an on and a level question per direction', async () => {
     const fake = mockGateway(replyWith(jevResponse()));
     await post(validInput());
 
     assert.equal(fake.mock.callCount(), 1);
     const [url, init] = fake.mock.calls[0].arguments;
     const sent = JSON.parse(init.body);
-
     assert.equal(url, GATEWAY_URL);
     assert.equal(init.headers.authorization, `Bearer ${KEY}`);
     assert.equal(sent.model, JEV_MODEL);
-    assert.deepEqual(Object.keys(sent.questions).sort(), [
-      'lateral_0',
-      'lateral_1',
-      'lateral_strength',
-      'longitudinal_0',
-      'longitudinal_1',
-      'longitudinal_strength',
-    ]);
-    assert.equal(sent.questions.lateral_1.type, 'choice');
-    assert.match(sent.questions.lateral_1.instructions, /2 seconds/);
+    assert.deepEqual(Object.keys(sent.questions).sort(), DIRS.flatMap((d) => [`${d}_level`, `${d}_on`]).sort());
+    for (const dir of DIRS) {
+      assert.deepEqual(Object.keys(sent.questions[`${dir}_on`].criteria), ['yes', 'no']);
+      assert.deepEqual(Object.keys(sent.questions[`${dir}_level`].criteria), ['weak', 'moderate', 'strong', 'very strong']);
+      assert.match(sent.questions[`${dir}_on`].instructions, /Exactly 2 seconds/);
+    }
   });
 
-  it('forwards contract fields only', async () => {
+  it('sends only plain language: scale, rules, three windows, now and nav', async () => {
     const fake = mockGateway(replyWith(jevResponse()));
-    const input = validInput();
-    input.scenarioId = 'pangyo-gangnam';
-    input.signals[0].futureBrakeAt = 12.4;
-    input.nextTurn.description = 'secret';
-    await post(input);
-
-    const { state } = JSON.parse(fake.mock.calls[0].arguments[1].body);
-    assert.deepEqual(Object.keys(state).sort(), ['frontEvent', 'motion', 'nextTurn', 'notes', 'projections', 'signals', 'wheelNow']);
-    assert.deepEqual(Object.keys(state.signals[0]).sort(), [
-      'ageMs',
-      'brake',
-      'speedKph',
-      'steeringDeg',
-      'turnSignal',
-    ]);
-    assert.deepEqual(Object.keys(state.nextTurn).sort(), ['distanceM', 'etaSec', 'type']);
+    await post({ ...validInput(), extra: 'secret' });
+    const { state } = sentBody(fake);
+    assert.deepEqual(Object.keys(state).sort(), ['nav', 'now', 'rules', 'scale', 'windows']);
+    assert.equal(state.windows.length, 3);
+    assert.doesNotMatch(JSON.stringify(state), /secret|steeringDeg|degrees/);
   });
 
-  it('derives eta and motion from the signals', async () => {
-    const fake = mockGateway(replyWith(jevResponse()));
-    const input = validInput();
-    input.signals = [800, 600, 400, 200, 0].map((age, i) => signal(age, { speedKph: 36 - i * 1.8, steeringDeg: i * -10 }));
-    await post(input);
-
-    const { state } = JSON.parse(fake.mock.calls[0].arguments[1].body);
-    assert.deepEqual(state.motion, { accelMps2: -2.5, steeringRateDegS: -50 });
-    // The newest speed, 28.8 km/h, is 8 m/s.
-    assert.deepEqual(state.nextTurn, { type: 'TURN_LEFT', distanceM: 80, etaSec: 10 });
-    assert.deepEqual(state.frontEvent, { type: 'CONGESTION', distanceM: 200, etaSec: 25 });
-  });
-
-  it('projects each horizon by arithmetic only', async () => {
-    const fake = mockGateway(replyWith(jevResponse()));
-    const input = validInput();
-    input.signals = [800, 600, 400, 200, 0].map((age, i) => signal(age, { speedKph: 36 - i * 1.8, steeringDeg: i * -10 }));
-    input.frontEvent = null;
-    input.horizonsSec = [2, 20];
-    await post(input);
-
-    const { state } = JSON.parse(fake.mock.calls[0].arguments[1].body);
-    assert.equal(state.wheelNow, '40 degrees right');
-    assert.deepEqual(state.projections[0], {
-      horizonSec: 2,
-      speedKph: 10.8, // 28.8 km/h falling 2.5 m/s² for 2 s.
-      wheel: '140 degrees right', // -40 degrees turning at -50 per second.
-      nextTurnEtaAfterSec: 8,
-      frontEventEtaAfterSec: null,
-      stopDecelAfterMps2: 0.5, // 8 m/s over the 64 m left after 2 s.
-    });
-    assert.equal(state.projections[1].speedKph, 0);
-    assert.equal(state.projections[1].stopDecelAfterMps2, null);
-  });
-
-  it('calls a centred wheel centred', async () => {
-    const fake = mockGateway(replyWith(jevResponse()));
-    const input = validInput();
-    input.signals = [800, 600, 400, 200, 0].map((age) => signal(age, { steeringDeg: 0 }));
-    await post(input);
-    assert.equal(JSON.parse(fake.mock.calls[0].arguments[1].body).state.wheelNow, 'centred');
-  });
-
-  it('sends no eta when stopped', async () => {
-    const fake = mockGateway(replyWith(jevResponse()));
-    const input = validInput();
-    input.signals = [800, 600, 400, 200, 0].map((age) => signal(age, { speedKph: 0 }));
-    await post(input);
-
-    const { state } = JSON.parse(fake.mock.calls[0].arguments[1].body);
-    assert.equal(state.nextTurn.etaSec, null);
-  });
-
-  it('states each horizon in the question and keeps timing rules out of the criteria', async () => {
+  it('keeps numbers out of the criteria', async () => {
     const fake = mockGateway(replyWith(jevResponse()));
     await post(validInput());
-
-    const { questions } = JSON.parse(fake.mock.calls[0].arguments[1].body);
-    assert.match(questions.lateral_0.instructions, /exactly 1\.6 seconds/);
-    // The only numbers allowed are the horizon, the state index and the label definitions.
-    const numbers = JSON.stringify(questions).match(/\d+(\.\d+)?/g);
-    assert.deepEqual([...new Set(numbers)].sort(), ['0', '0.6', '1', '1.6', '15', '2']);
-    assert.deepEqual(Object.keys(questions.lateral_0.criteria), ['left', 'right', 'straight']);
-    assert.deepEqual(Object.keys(questions.longitudinal_0.criteria), ['accelerate', 'brake', 'steady']);
-    assert.deepEqual(Object.keys(questions.lateral_strength.criteria), ['gentle', 'firm']);
-    assert.deepEqual(Object.keys(questions.longitudinal_strength.criteria), ['gentle', 'firm']);
+    for (const q of Object.values(sentBody(fake).questions)) {
+      assert.doesNotMatch(JSON.stringify(q.criteria), /[0-9]/);
+    }
   });
 });
 
 describe('response mapping', () => {
-  it('maps answers to the contract in horizon order', async () => {
+  it('returns pOn and the weighted level for each body direction', async () => {
     mockGateway(replyWith(jevResponse()));
     const response = await post(validInput());
     assert.equal(response.status, 200);
-
     const body = await response.json();
-    assert.deepEqual(Object.keys(body).sort(), ['predictions', 'serverMs']);
+    assert.equal(body.horizonSec, 2);
+    assert.deepEqual(body.push.forward, { pOn: 0.88, level: 2, levelMean: 2.08 });
+    assert.deepEqual(body.push.right, { pOn: 0.62, level: 2, levelMean: 1.92 });
+    assert.equal(body.push.backward.pOn, 0.04);
     assert.equal(typeof body.serverMs, 'number');
-    assert.deepEqual(body.predictions, [
-      {
-        horizonSec: 1.6,
-        lateral: {
-          value: 'left',
-          probability: 0.8,
-          confidence: 0.7,
-          strength: 0.55, // 0.75 × 0.4 + 0.25 × 1
-          probabilities: { left: 0.8, right: 0.1, straight: 0.1 },
-        },
-        longitudinal: {
-          value: 'brake',
-          probability: 0.7,
-          confidence: 0.6,
-          strength: 0.82, // 0.3 × 0.4 + 0.7 × 1
-          probabilities: { accelerate: 0.1, brake: 0.7, steady: 0.2 },
-        },
-        hint: 0.8,
-      },
-      {
-        horizonSec: 2,
-        lateral: {
-          value: 'straight',
-          probability: 0.6,
-          confidence: 0.5,
-          strength: 0,
-          probabilities: { left: 0.3, right: 0.1, straight: 0.6 },
-        },
-        longitudinal: {
-          value: 'steady',
-          probability: 0.5,
-          confidence: 0.4,
-          strength: 0,
-          probabilities: { accelerate: 0.1, brake: 0.4, steady: 0.5 },
-        },
-        hint: 0.4,
-      },
-    ]);
   });
 
-  it('gives all firm full strength and all gentle the gentle strength', async () => {
+  it('normalizes probabilities that do not sum to one', async () => {
     const jev = jevResponse();
-    jev.answers.lateral_strength.probabilities = { gentle: 0, firm: 1 };
-    jev.answers.longitudinal_strength.probabilities = { gentle: 1, firm: 0 };
+    jev.answers.left_on.probabilities = { yes: 0.3, no: 0.3 };
+    jev.answers.left_level.probabilities = levelProbabilities(0, 0, 0, 0.5);
     mockGateway(replyWith(jev));
-    const { predictions } = await (await post(validInput())).json();
-    assert.equal(predictions[0].lateral.strength, 1);
-    assert.equal(predictions[0].longitudinal.strength, 0.4);
-  });
-
-  it('accepts confidence on the answer object', async () => {
-    const jev = jevResponse();
-    delete jev.providerMetadata;
-    for (const key of ['lateral_0', 'longitudinal_0', 'lateral_1', 'longitudinal_1']) {
-      jev.answers[key].confidence = 0.55;
-    }
-    mockGateway(replyWith(jev));
-    const response = await post(validInput());
-    assert.equal(response.status, 200);
-    assert.equal((await response.json()).predictions[1].lateral.confidence, 0.55);
+    const body = await (await post(validInput())).json();
+    assert.deepEqual(body.push.left, { pOn: 0.5, level: 4, levelMean: 4 });
   });
 
   const broken = {
     'no answers': (jev) => delete jev.answers,
-    'missing question': (jev) => delete jev.answers.longitudinal_1,
-    'unknown choice': (jev) => (jev.answers.lateral_0.choice = 'up'),
-    'missing probabilities': (jev) => delete jev.answers.lateral_0.probabilities,
-    'missing class probability': (jev) => delete jev.answers.lateral_0.probabilities.right,
-    'missing strength answer': (jev) => delete jev.answers.lateral_strength,
-    'missing strength probability': (jev) => delete jev.answers.longitudinal_strength.probabilities.firm,
-    'missing confidence': (jev) => delete jev.providerMetadata,
+    'missing on question': (jev) => delete jev.answers.right_on,
+    'missing level question': (jev) => delete jev.answers.backward_level,
+    'missing class probability': (jev) => delete jev.answers.forward_level.probabilities.strong,
+    'out of range probability': (jev) => (jev.answers.left_on.probabilities.yes = 1.2),
+    'all zero level': (jev) => (jev.answers.left_level.probabilities = levelProbabilities(0, 0, 0, 0)),
   };
 
   for (const [name, breakIt] of Object.entries(broken)) {

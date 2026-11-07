@@ -34,8 +34,8 @@ async function handle(request, startedAt) {
 
   try {
     const jev = await callJev(buildJevRequest(input), apiKey);
-    const predictions = mapJevResponse(jev, input.horizonsSec);
-    return json(200, { predictions, serverMs: Math.round(performance.now() - startedAt) });
+    const prediction = mapJevResponse(jev);
+    return json(200, { ...prediction, serverMs: Math.round(performance.now() - startedAt) });
   } catch (error) {
     if (!(error instanceof UpstreamError)) throw error;
     // Details stay in the server log. The client only needs the failure class.

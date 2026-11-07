@@ -15,7 +15,6 @@ import ai.activeseat.app.hint.HintStabilizer
 import ai.activeseat.app.hint.LateralCue
 import ai.activeseat.app.hint.LongitudinalCue
 import ai.activeseat.app.hint.MotionProbabilities
-import ai.activeseat.app.hint.RttTracker
 import ai.activeseat.app.nav.NavRoute
 import ai.activeseat.app.nav.NavState
 import ai.activeseat.app.nav.RouteNavigator
@@ -25,6 +24,7 @@ import ai.activeseat.app.prediction.PredictClient
 import ai.activeseat.app.prediction.PredictResult
 import ai.activeseat.app.prediction.PredictionAssembler
 import ai.activeseat.app.prediction.PredictionLoop
+import ai.activeseat.app.prediction.PushPrediction
 import ai.activeseat.app.vehicle.CarSignalSource
 import ai.activeseat.app.vehicle.SignalSampler
 import ai.activeseat.app.vehicle.VehicleSignal
@@ -39,6 +39,7 @@ import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
@@ -84,7 +85,8 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
     private val sampler = SignalSampler(source, clock)
     private val scenarios = ScenarioRepository(application)
     private val player = ScenarioPlayer(ConsoleClient(), clock) { Log.i(TAG, it) }
-    private val stabilizer = HintStabilizer(HintConfig(), clock, RttTracker())
+    private val hintConfig = HintConfig()
+    private val stabilizer = HintStabilizer(hintConfig, clock)
     private var playJob: Job? = null
 
     @Volatile
@@ -127,10 +129,17 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
 
         val client = PredictClient(BuildConfig.PREDICT_URL, BuildConfig.PREDICT_TOKEN)
         val assembler = PredictionAssembler(sampler::window, currentNav)
-        val loop = PredictionLoop(assembler, client, ::shouldPredict) { result ->
+        val loop = PredictionLoop(assembler, client, clock, ::shouldPredict) { result, requestStartMs ->
             if (BuildConfig.DEBUG) Log.d(TAG, "PREDICT ${describe(result)}")
             _ui.update { it.copy(predictionStatus = describe(result)) }
-            publish(stabilizer.onResult(result))
+            publish(stabilizer.onResult(result, requestStartMs))
+            // The sampler's 200 ms tick would apply it too, up to 200 ms late; this lands on the moment.
+            stabilizer.pendingApplyAtMs()?.let { applyAtMs ->
+                viewModelScope.launch(Dispatchers.Default) {
+                    delay(applyAtMs - clock())
+                    publish(stabilizer.tick())
+                }
+            }
         }
         viewModelScope.launch(Dispatchers.Default) { loop.run() }
     }
@@ -277,14 +286,18 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
         right = if (lateral == LateralCue.RIGHT) 1.0 else 0.0,
     )
 
+    // Body push: pOn and level, e.g. 0.88/2.
+    private fun PushPrediction.text() = "%.2f/%d".format(pOn, level)
+
     private fun describe(result: PredictResult?): String = when (result) {
         null -> "대기 중"
         PredictResult.NotConfigured -> "서버 미설정"
         is PredictResult.Failure -> "실패: ${result.message}"
         is PredictResult.Success -> {
-            val first = result.predictions.firstOrNull()
-            val detail = first?.let { "${it.horizonSec}s ${it.lateral.value}/${it.longitudinal.value}" }
-            "왕복 ${result.rttMs}ms ${detail ?: "예측 없음"}"
+            val push = result.push
+            val dropped = if (result.rttMs > hintConfig.maxRoundTripMs) " 늦어서 버림" else ""
+            "왕복 ${result.rttMs}ms$dropped 몸 쏠림 앞${push.forward.text()} 뒤${push.backward.text()} " +
+                "좌${push.left.text()} 우${push.right.text()}"
         }
     }
 }
