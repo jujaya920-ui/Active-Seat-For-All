@@ -1,5 +1,7 @@
 package ai.activeseat.app.demo
 
+import ai.activeseat.app.nav.NavCamera
+import ai.activeseat.app.nav.NavCaution
 import ai.activeseat.app.nav.NavMark
 import ai.activeseat.app.nav.NavRoute
 
@@ -16,6 +18,8 @@ fun Scenario.toNavRoute() = NavRoute(
     lengthM = timelineDistanceM().takeIf { it > 0 } ?: routeLengthM,
     turns = turns.map { it.toNavMark() },
     frontEvents = frontEvents.map { it.toNavMark() },
+    cameras = cameras.map { NavCamera(it.atM, it.id, it.type, it.speedLimit, it.sectionAvrSpeed) },
+    cautionPoints = cautionPoints.map { NavCaution(it.atM, it.id, it.type) },
 )
 
 private fun Scenario.timelineDistanceM() = timeline.zipWithNext().sumOf { (a, b) ->

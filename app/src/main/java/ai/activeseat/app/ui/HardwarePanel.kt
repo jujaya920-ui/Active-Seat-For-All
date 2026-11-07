@@ -56,7 +56,6 @@ import kotlin.math.pow
 import kotlin.math.roundToInt
 import kotlin.math.sin
 
-private const val PROBABLE = 0.55
 
 private val PanelColor = Color(0xFF05080F)
 private val TextBright = Color(0xFFCFE6F7)
@@ -147,7 +146,7 @@ private fun ProbabilityBars(probabilities: MotionProbabilities, modifier: Modifi
 
 @Composable
 private fun ProbabilityBar(label: String, probability: Double) {
-    val color = if (probability >= PROBABLE) Amber else TextDim
+    val color = if (probability > 0.0) Amber else TextDim
     Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(14.dp)) {
         Text(label, color = color, fontSize = 20.sp, maxLines = 1, modifier = Modifier.width(28.dp))
         Box(

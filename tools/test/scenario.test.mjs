@@ -1,8 +1,19 @@
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import { test } from 'node:test';
-import { LABEL, STEP_S, TURN_TYPES, accelerations, detectManeuvers, distances } from '../scenario/common.mjs';
 import {
+  CAMERA_TYPES,
+  CAUTION_POINT_TYPES,
+  LABEL,
+  STEP_S,
+  TURN_TYPES,
+  accelerations,
+  detectManeuvers,
+  distances,
+} from '../scenario/common.mjs';
+import {
+  CAMERAS,
+  CAUTION,
   DEMO,
   DRIVER,
   HANDS,
@@ -16,6 +27,8 @@ import {
   holdWheel,
   outputPath,
   parseRoute,
+  placeCameras,
+  placeCautionPoints,
   placeSlowdowns,
   placeStops,
   routePath,
@@ -66,13 +79,45 @@ for (const entry of ROUTES) {
     assert.ok(Math.abs(total - route.lengthM) / route.lengthM <= 0.01);
   });
 
-  test(`${entry.id}: stays parseable and adds only demoWindow`, () => {
+  test(`${entry.id}: stays parseable and adds only demoWindow, cameras and caution points`, () => {
     const parsed = JSON.parse(formatScenario(scenario));
     assert.deepEqual(Object.keys(parsed).sort(), [
-      'demoWindow', 'frontEvents', 'id', 'mapImage', 'mapSize', 'originRoad', 'routeLengthM', 'routePx', 'timeline', 'title', 'turns',
+      'cameras', 'cautionPoints', 'demoWindow', 'frontEvents', 'id', 'mapImage', 'mapSize', 'originRoad', 'routeLengthM', 'routePx',
+      'timeline', 'title', 'turns',
     ]);
+    assert.deepEqual(parsed.cameras, scenario.cameras);
+    assert.deepEqual(parsed.cautionPoints, scenario.cautionPoints);
     assert.ok(parsed.routePx.every((point) => point.every(Number.isInteger)));
   });
+
+  test(`${entry.id}: cameras and caution points use NaviHelper types and unique ids`, () => {
+    assert.ok(scenario.cameras.every((camera) => CAMERA_TYPES.includes(camera.type)));
+    assert.ok(scenario.cautionPoints.every((point) => CAUTION_POINT_TYPES.includes(point.type)));
+    for (const list of [scenario.cameras, scenario.cautionPoints]) {
+      assert.equal(new Set(list.map((item) => item.id)).size, list.length);
+    }
+  });
+
+  test(`${entry.id}: every bump is passed at 25 km/h or less`, () => {
+    const travelled = distances(scenario.timeline);
+    for (const point of scenario.cautionPoints.filter((item) => item.type === 'SPEED_BUMP')) {
+      const i = travelled.findIndex((metres) => metres >= point.atM);
+      assert.ok(scenario.timeline[i].speedKph <= 25, `${point.id}: ${scenario.timeline[i].speedKph}`);
+    }
+  });
+
+  if (scenario.routeLengthM <= SHORT.maxLengthM) {
+    test(`${entry.id}: one camera, approached speeding and passed at or below the limit`, () => {
+      assert.equal(scenario.cameras.length, 1);
+      const [camera] = scenario.cameras;
+      const travelled = distances(scenario.timeline);
+      const from = travelled.findIndex((metres) => metres >= camera.atM - 300);
+      const at = travelled.findIndex((metres) => metres >= camera.atM);
+      const peak = Math.max(...scenario.timeline.slice(from, at + 1).map((row) => row.speedKph));
+      assert.ok(peak >= camera.speedLimit + 10, `peak ${peak}`);
+      assert.ok(scenario.timeline[at].speedKph <= camera.speedLimit, `at camera ${scenario.timeline[at].speedKph}`);
+    });
+  }
 
   test(`${entry.id}: polyline fractions follow true distance`, () => {
     const lengths = [0];
@@ -281,6 +326,43 @@ expectError('a demo window that starts moving', (s) => {
   const moving = s.timeline.find((row) => row.speedKph > 10).t;
   s.demoWindow = { fromSec: moving, toSec: moving + 150 };
 }, /start with the car stopped/);
+
+expectError('missing cameras', (s) => { delete s.cameras; }, /top-level keys|cameras must be an array/);
+expectError('an invented camera type', (s) => { s.cameras[0].type = 'SPEED_CAMERA_LASER'; }, /not a NaviHelper type/);
+expectError('a duplicate camera id', (s) => { s.cameras[1].id = s.cameras[0].id; }, /is not unique/);
+expectError('a camera off the route', (s) => { s.cameras.at(-1).atM = s.routeLengthM; }, /inside the route/);
+expectError('a fractional camera position', (s) => { s.cameras[0].atM += 0.5; }, /inside the route/);
+expectError('cameras out of order', (s) => { s.cameras.reverse(); }, /atM order/);
+expectError('a camera with no limit', (s) => { s.cameras[0].speedLimit = 0; }, /speedLimit/);
+expectError('an invented caution point type', (s) => {
+  s.cautionPoints = [{ atM: 100, id: 'cp-1', type: 'SPEED_HUMP' }];
+}, /not a NaviHelper type/);
+expectError('a caution point with an extra key', (s) => {
+  s.cautionPoints = [{ atM: 100, id: 'cp-1', type: 'SPEED_BUMP', speedLimit: 20 }];
+}, /keys must be atM, id, type/);
+
+test('the enum lists cover every type the generator writes', () => {
+  assert.ok(CAMERA_TYPES.includes('SPEED_CAMERA_FIX'));
+  assert.ok(['SPEED_BUMP', 'SCHOOL_ZONE'].every((type) => CAUTION_POINT_TYPES.includes(type)));
+  assert.equal(new Set(CAMERA_TYPES).size, 10);
+  assert.equal(new Set(CAUTION_POINT_TYPES).size, 23);
+});
+
+test('long-route cameras and caution points follow their seeds and stay clear of each other', () => {
+  const steps = [
+    { type: 'depart', atM: 0, kph: 50 },
+    { type: 'merge', modifier: 'slight left', atM: 20000, kph: 90 },
+    { type: 'arrive', atM: 40000, kph: 0 },
+  ];
+  const cameras = placeCameras(steps, 40000, [], seededRandom('a:cameras'));
+  assert.deepEqual(cameras, placeCameras(steps, 40000, [], seededRandom('a:cameras')));
+  assert.ok(cameras.some((camera) => camera.speeding) && cameras.some((camera) => !camera.speeding));
+  assert.ok(cameras.every((camera) => camera.limitKph === (camera.atM < 20000 ? CAMERAS.urbanLimitKph : CAMERAS.motorwayLimitKph)));
+  const points = placeCautionPoints(steps, 40000, cameras.map((camera) => camera.span), seededRandom('a:caution'));
+  assert.ok(points.length > 0 && points.every((point) => point.atM + CAUTION.schoolZoneM < 20000));
+  const spans = [...cameras.map((c) => c.span), ...points.map((p) => [p.atM - CAUTION.approachM, p.atM])].sort((a, b) => a[0] - b[0]);
+  for (let i = 1; i < spans.length; i++) assert.ok(spans[i][0] - spans[i - 1][1] >= Math.min(CAMERAS.minGapM, CAUTION.minGapM) - 1e-9);
+});
 
 test('reports an absent map image as a warning, not an error', () => {
   const report = validateScenario(fresh(), { assetsDir: 'does-not-exist' });

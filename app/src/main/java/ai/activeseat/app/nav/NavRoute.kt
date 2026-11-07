@@ -6,6 +6,12 @@ import kotlin.math.hypot
 /** A point of interest on the route. `type` carries NaviHelper's value unchanged. */
 data class NavMark(val atM: Double, val type: String, val description: String)
 
+/** A speed camera. `type` and the speeds carry NaviHelper's CameraAlert values unchanged. */
+data class NavCamera(val atM: Double, val id: String, val type: String, val speedLimit: Int, val sectionAvrSpeed: Int)
+
+/** A caution point. `type` carries NaviHelper's CautionPointType name unchanged. */
+data class NavCaution(val atM: Double, val id: String, val type: String)
+
 /** `routePx` is in map pixels: distance along it is proportional to distance on the road. */
 data class NavRoute(
     val title: String,
@@ -13,6 +19,8 @@ data class NavRoute(
     val lengthM: Double,
     val turns: List<NavMark>,
     val frontEvents: List<NavMark>,
+    val cameras: List<NavCamera> = emptyList(),
+    val cautionPoints: List<NavCaution> = emptyList(),
 ) {
     /** `segment` indexes the polyline leg holding the point; a vertex belongs to the leg leaving it. */
     fun pointAt(fraction: Double): RoutePoint {

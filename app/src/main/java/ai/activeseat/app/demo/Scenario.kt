@@ -10,6 +10,12 @@ private const val TIME_EPSILON = 1e-6
 
 data class RouteMark(val atM: Double, val type: String, val description: String)
 
+/** A speed camera on the route. `type` is NaviHelper's CameraType name. */
+data class CameraMark(val atM: Double, val id: String, val type: String, val speedLimit: Int, val sectionAvrSpeed: Int)
+
+/** A caution point on the route. `type` is NaviHelper's CautionPointType name. */
+data class CautionMark(val atM: Double, val id: String, val type: String)
+
 /** One timeline row. Steering is positive to the left, as everywhere inside the app. */
 data class ScenarioFrame(
     val t: Double,
@@ -32,6 +38,8 @@ data class Scenario(
     val turns: List<RouteMark>,
     val frontEvents: List<RouteMark>,
     val timeline: List<ScenarioFrame>,
+    val cameras: List<CameraMark> = emptyList(),
+    val cautionPoints: List<CautionMark> = emptyList(),
     val demoWindow: DemoWindow? = null,
     val mapSize: Pair<Int, Int> = 0 to 0,
     val originRoad: String = "",
@@ -113,6 +121,13 @@ fun parseScenario(json: String): Scenario {
         demoWindow = root.optJSONObject("demoWindow")?.let { DemoWindow(it.getDouble("fromSec"), it.getDouble("toSec")) },
         mapSize = mapSize.getInt(0) to mapSize.getInt(1),
         originRoad = root.optString("originRoad"),
+        // Older and test scenarios have neither array.
+        cameras = root.optJSONArray("cameras")?.objects().orEmpty().map {
+            CameraMark(it.getDouble("atM"), it.getString("id"), it.getString("type"), it.getInt("speedLimit"), it.optInt("sectionAvrSpeed"))
+        },
+        cautionPoints = root.optJSONArray("cautionPoints")?.objects().orEmpty().map {
+            CautionMark(it.getDouble("atM"), it.getString("id"), it.getString("type"))
+        },
     )
 }
 

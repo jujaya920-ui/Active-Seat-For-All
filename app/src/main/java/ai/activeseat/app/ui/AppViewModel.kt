@@ -10,22 +10,22 @@ import ai.activeseat.app.demo.toNavRoute
 import ai.activeseat.app.hardware.HardwareCommand
 import ai.activeseat.app.hardware.toHardwareCommand
 import ai.activeseat.app.hint.Hint
-import ai.activeseat.app.hint.HintConfig
-import ai.activeseat.app.hint.HintStabilizer
 import ai.activeseat.app.hint.LateralCue
 import ai.activeseat.app.hint.LongitudinalCue
 import ai.activeseat.app.hint.MotionProbabilities
+import ai.activeseat.app.motion.CueSource
+import ai.activeseat.app.motion.MotionEngine
+import ai.activeseat.app.motion.MotionOutput
+import ai.activeseat.app.motion.NaviFeed
+import ai.activeseat.app.nav.FakeNaviHelper
 import ai.activeseat.app.nav.NavRoute
 import ai.activeseat.app.nav.NavState
 import ai.activeseat.app.nav.RouteNavigator
-import ai.activeseat.app.prediction.NavContext
-import ai.activeseat.app.prediction.NavItem
-import ai.activeseat.app.prediction.PredictClient
-import ai.activeseat.app.prediction.PredictResult
-import ai.activeseat.app.prediction.PredictionAssembler
-import ai.activeseat.app.prediction.PredictionLoop
-import ai.activeseat.app.prediction.PushPrediction
 import ai.activeseat.app.vehicle.CarSignalSource
+import ai.activeseat.app.vehicle.DRIVER_SEAT
+import ai.activeseat.app.vehicle.Gear
+import ai.activeseat.app.vehicle.hasPassenger
+import ai.activeseat.app.vehicle.runsMotion
 import ai.activeseat.app.vehicle.SignalSampler
 import ai.activeseat.app.vehicle.VehicleSignal
 import android.app.Application
@@ -39,7 +39,6 @@ import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
-import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
@@ -69,7 +68,7 @@ data class UiState(
     val screen: NavScreen = NavScreen.HOME,
     val originRoad: String = "",
     val playerError: String? = null,
-    val predictionStatus: String = "대기 중",
+    val motionStatus: String = "대기 중",
     val route: NavRoute? = null,
     val map: RouteMap? = null,
     val nav: NavState? = null,
@@ -85,8 +84,10 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
     private val sampler = SignalSampler(source, clock)
     private val scenarios = ScenarioRepository(application)
     private val player = ScenarioPlayer(ConsoleClient(), clock) { Log.i(TAG, it) }
-    private val hintConfig = HintConfig()
-    private val stabilizer = HintStabilizer(hintConfig, clock)
+    private val engine = MotionEngine()
+    private val naviFeed = NaviFeed()
+    @Volatile
+    private var lastNaviEmitMs: Long? = null
     private var playJob: Job? = null
 
     @Volatile
@@ -103,11 +104,10 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
     @Volatile
     private var navigator: RouteNavigator? = null
 
-    // Follows whichever destination is selected, so the assembler never sees a scenario.
-    private val currentNav = object : NavContext {
-        override fun nextTurn(): NavItem? = navigator?.nextTurn()
-        override fun frontEvent(): NavItem? = navigator?.frontEvent()
-    }
+    // Stands in for the built-in navigation on the selected route. The engine hears it only
+    // through the NaviHelper listener, as it would the real one.
+    @Volatile
+    private var fakeNavi: FakeNaviHelper? = null
 
     private val _ui = MutableStateFlow(UiState())
     val ui: StateFlow<UiState> = _ui.asStateFlow()
@@ -120,28 +120,16 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
         refreshSpeed()
         viewModelScope.launch(Dispatchers.Default) {
             sampler.run { signal ->
-                navigator?.onSpeed(signal.speedKph, clock())
-                _ui.update { it.copy(signal = signal, nav = navigator?.state()) }
-                publish(stabilizer.tick())
-                if (BuildConfig.DEBUG) Log.d(TAG, "SAMPLE ${sampler.window().last()} nav=${navigator?.state()?.progressM}")
+                val now = clock()
+                navigator?.onSpeed(signal.speedKph, now)
+                emitNavi(signal.speedKph, now)
+                val output = engine.step(signal, now, naviFeed.snapshot, drive = signal.gear.runsMotion())
+                _ui.update { it.copy(signal = signal, nav = navigator?.state(), motionStatus = describe(output, signal)) }
+                // Occupancy only routes the output: with no passenger every module and the watch rest.
+                publish(if (signal.seats.hasPassenger()) output.hint else Hint())
+                if (BuildConfig.DEBUG) Log.d(TAG, "SAMPLE $signal nav=${navigator?.state()?.progressM} $output")
             }
         }
-
-        val client = PredictClient(BuildConfig.PREDICT_URL, BuildConfig.PREDICT_TOKEN)
-        val assembler = PredictionAssembler(sampler::window, currentNav)
-        val loop = PredictionLoop(assembler, client, clock, ::shouldPredict) { result, requestStartMs ->
-            if (BuildConfig.DEBUG) Log.d(TAG, "PREDICT ${describe(result)}")
-            _ui.update { it.copy(predictionStatus = describe(result)) }
-            publish(stabilizer.onResult(result, requestStartMs))
-            // The sampler's 200 ms tick would apply it too, up to 200 ms late; this lands on the moment.
-            stabilizer.pendingApplyAtMs()?.let { applyAtMs ->
-                viewModelScope.launch(Dispatchers.Default) {
-                    delay(applyAtMs - clock())
-                    publish(stabilizer.tick())
-                }
-            }
-        }
-        viewModelScope.launch(Dispatchers.Default) { loop.run() }
     }
 
     fun refreshSpeed() {
@@ -216,6 +204,9 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
         val route = scenario.toNavRoute()
         val next = RouteNavigator(route)
         navigator = next
+        fakeNavi = FakeNaviHelper(route)
+        naviFeed.clear()
+        lastNaviEmitMs = null
         _ui.update {
             it.copy(
                 selectedScenario = id,
@@ -241,16 +232,20 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
     // Test scenarios have no demo window and stay reachable only through the intent.
     private fun demoRoutes() = loaded.values.filter { it.demoWindow != null }
 
-    private fun shouldPredict(): Boolean {
-        val state = player.state.value
-        return state is PlayerState.Warmup || state is PlayerState.Playing || source.latest().speedKph > 0
+    /** NaviHelper-style reports once a second while a route is selected. */
+    private fun emitNavi(speedKph: Double, nowMs: Long) {
+        val navi = fakeNavi ?: return
+        val nav = navigator ?: return
+        if (lastNaviEmitMs?.let { nowMs - it < FakeNaviHelper.EMIT_INTERVAL_MS } == true) return
+        lastNaviEmitMs = nowMs
+        navi.emit(nav.state().progressM, speedKph, naviFeed)
     }
 
     private fun publish(hint: Hint) {
         if (BuildConfig.DEBUG && hint != lastHint) Log.d(TAG, "HINT $hint")
         lastHint = hint
         val shown = testHint ?: hint
-        val probabilities = testHint?.toProbabilities() ?: stabilizer.probabilities()
+        val probabilities = shown.toProbabilities()
         _ui.update { it.copy(hardware = shown.toHardwareCommand(), forecast = shown, probabilities = probabilities) }
     }
 
@@ -279,25 +274,36 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
         getApplication<Application>().assets.open(path).use { BitmapFactory.decodeStream(it, null, options)!!.asImageBitmap() }
     }.getOrNull()
 
+    /** Each bar is the cue's strength toward that car maneuver, 0 when it is off. */
     private fun Hint.toProbabilities() = MotionProbabilities(
-        forward = if (longitudinal == LongitudinalCue.ACCELERATE) 1.0 else 0.0,
-        back = if (longitudinal == LongitudinalCue.BRAKE) 1.0 else 0.0,
-        left = if (lateral == LateralCue.LEFT) 1.0 else 0.0,
-        right = if (lateral == LateralCue.RIGHT) 1.0 else 0.0,
+        forward = if (longitudinal == LongitudinalCue.ACCELERATE) longitudinalStrength else 0.0,
+        back = if (longitudinal == LongitudinalCue.BRAKE) longitudinalStrength else 0.0,
+        left = if (lateral == LateralCue.LEFT) lateralStrength else 0.0,
+        right = if (lateral == LateralCue.RIGHT) lateralStrength else 0.0,
     )
 
-    // Body push: pOn and level, e.g. 0.88/2.
-    private fun PushPrediction.text() = "%.2f/%d".format(pOn, level)
-
-    private fun describe(result: PredictResult?): String = when (result) {
-        null -> "대기 중"
-        PredictResult.NotConfigured -> "서버 미설정"
-        is PredictResult.Failure -> "실패: ${result.message}"
-        is PredictResult.Success -> {
-            val push = result.push
-            val dropped = if (result.rttMs > hintConfig.maxRoundTripMs) " 늦어서 버림" else ""
-            "왕복 ${result.rttMs}ms$dropped 몸 쏠림 앞${push.forward.text()} 뒤${push.backward.text()} " +
-                "좌${push.left.text()} 우${push.right.text()}"
+    // e.g. "D · 동승 · 횡 예측 +0.3 · 종 실측 -1.4 m/s²": the gates, which model holds each axis, and what is measured now.
+    private fun describe(output: MotionOutput, signal: VehicleSignal): String {
+        val gear = when (signal.gear) {
+            Gear.UNKNOWN -> "기어 미확인"
+            Gear.PARK -> "P"
+            Gear.REVERSE -> "R"
+            Gear.NEUTRAL -> "N"
+            Gear.DRIVE -> "D"
         }
+        val passengers = signal.seats.filterKeys { it != DRIVER_SEAT }
+        val seats = when {
+            passengers.isEmpty() -> "탑승 미확인"
+            passengers.values.any { it } -> "동승 ${passengers.count { it.value }}명"
+            else -> "동승 없음"
+        }
+        return "$gear · $seats · 횡 ${output.lateralSource.text()} %+.1f · 종 ${output.longitudinalSource.text()} %+.1f m/s²"
+            .format(output.lateralMps2, output.longitudinalMps2)
+    }
+
+    private fun CueSource.text() = when (this) {
+        CueSource.NONE -> "없음"
+        CueSource.PREDICTED -> "예측"
+        CueSource.MEASURED -> "실측"
     }
 }

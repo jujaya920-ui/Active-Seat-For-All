@@ -4,6 +4,8 @@ import { existsSync, readFileSync } from 'node:fs';
 import { dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import {
+  CAMERA_TYPES,
+  CAUTION_POINT_TYPES,
   FRONT_EVENT_TYPES,
   LIMITS,
   STEP_S,
@@ -17,7 +19,14 @@ import {
   polylineLength,
 } from './common.mjs';
 
-const TOP_KEYS = ['id', 'title', 'mapImage', 'mapSize', 'originRoad', 'routePx', 'routeLengthM', 'turns', 'frontEvents', 'timeline'];
+const TOP_KEYS = [
+  'id', 'title', 'mapImage', 'mapSize', 'originRoad', 'routePx', 'routeLengthM', 'turns', 'frontEvents', 'cameras', 'cautionPoints',
+  'timeline',
+];
+const POINT_LISTS = {
+  cameras: { keys: ['atM', 'id', 'type', 'speedLimit', 'sectionAvrSpeed'], types: CAMERA_TYPES },
+  cautionPoints: { keys: ['atM', 'id', 'type'], types: CAUTION_POINT_TYPES },
+};
 const OPTIONAL_TOP_KEYS = ['demoWindow'];
 const ROW_KEYS = ['t', 'speedKph', 'steeringDeg', 'brakePct', 'acceleratorPct', 'turnSignal'];
 const TURN_SIGNALS = ['Off', 'BlinkLeft', 'BlinkRight'];
@@ -75,6 +84,31 @@ function checkFormat(s, errors) {
   (Array.isArray(s.frontEvents) ? s.frontEvents : []).forEach((event, i) => {
     if (!FRONT_EVENT_TYPES.includes(event.type)) errors.push(`frontEvents[${i}].type ${event.type} is not allowed`);
   });
+
+  for (const [name, { keys, types }] of Object.entries(POINT_LISTS)) {
+    const list = s[name];
+    if (!Array.isArray(list)) {
+      errors.push(`${name} must be an array`);
+      continue;
+    }
+    const ids = new Set();
+    list.forEach((item, i) => {
+      if (item === null || typeof item !== 'object' || !sameKeys(item, keys)) {
+        errors.push(`${name}[${i}] keys must be ${keys.join(', ')}`);
+        return;
+      }
+      if (!Number.isInteger(item.atM) || item.atM <= 0 || item.atM >= s.routeLengthM) errors.push(`${name}[${i}].atM must be an integer inside the route`);
+      if (typeof item.id !== 'string' || item.id === '') errors.push(`${name}[${i}].id is missing`);
+      else if (ids.has(item.id)) errors.push(`${name}[${i}].id ${item.id} is not unique`);
+      ids.add(item.id);
+      if (!types.includes(item.type)) errors.push(`${name}[${i}].type ${item.type} is not a NaviHelper type`);
+      if (i > 0 && item.atM < list[i - 1].atM) errors.push(`${name} must be in atM order`);
+      if (name === 'cameras') {
+        if (!Number.isInteger(item.speedLimit) || item.speedLimit <= 0) errors.push(`${name}[${i}].speedLimit must be a positive integer`);
+        if (!isNumber(item.sectionAvrSpeed) || item.sectionAvrSpeed < 0) errors.push(`${name}[${i}].sectionAvrSpeed must be a number`);
+      }
+    });
+  }
 
   if (!Array.isArray(s.timeline) || s.timeline.length < 2) {
     errors.push('timeline needs at least 2 rows');
@@ -246,6 +280,8 @@ export function validateScenario(s, { assetsDir } = {}) {
   info.turns = s.turns.length;
   info.corners = corners.length;
   info.frontEvents = s.frontEvents.length;
+  info.cameras = Array.isArray(s.cameras) ? s.cameras.length : 'none';
+  info.cautionPoints = Array.isArray(s.cautionPoints) ? s.cautionPoints.length : 'none';
   info.routePxPoints = s.routePx.length;
   info.demoWindow = s.demoWindow ? `${s.demoWindow.fromSec} to ${s.demoWindow.toSec}` : 'none';
   info.hardAccels = hardAccels.length;

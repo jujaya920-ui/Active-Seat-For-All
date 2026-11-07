@@ -12,10 +12,32 @@ fun scenarioJson(rows: List<String>) = """{
     "routePx": [[120, 800], [400, 780]], "routeLengthM": 2400,
     "turns": [{ "atM": 500, "type": "TURN_RIGHT", "description": "ramp" }],
     "frontEvents": [{ "atM": 1500, "type": "CONGESTION", "description": "jam" }],
+    "cameras": [{ "atM": 900, "id": "cam-1", "type": "SPEED_CAMERA_FIX", "speedLimit": 50, "sectionAvrSpeed": 0 }],
+    "cautionPoints": [{ "atM": 1200, "id": "cp-1", "type": "SPEED_BUMP" }],
     "timeline": [${rows.joinToString(",")}]
 }"""
 
 class ScenarioTest {
+    @Test
+    fun parsesCamerasAndCautionPoints() {
+        val scenario = parseScenario(scenarioJson(listOf(row(0.0, 0, 0, 0, "Off"))))
+
+        assertEquals(listOf(CameraMark(900.0, "cam-1", "SPEED_CAMERA_FIX", 50, 0)), scenario.cameras)
+        assertEquals(listOf(CautionMark(1200.0, "cp-1", "SPEED_BUMP")), scenario.cautionPoints)
+    }
+
+    @Test
+    fun treatsMissingCamerasAndCautionPointsAsNone() {
+        val json = scenarioJson(listOf(row(0.0, 0, 0, 0, "Off")))
+            .replace(Regex("""\s*"cameras": \[.*?],"""), "")
+            .replace(Regex("""\s*"cautionPoints": \[.*?],"""), "")
+
+        val scenario = parseScenario(json)
+
+        assertEquals(emptyList<CameraMark>(), scenario.cameras)
+        assertEquals(emptyList<CautionMark>(), scenario.cautionPoints)
+    }
+
     @Test
     fun parsesContractFormat() {
         val scenario = parseScenario(scenarioJson(listOf(row(0.0, 0, 0, 0, "Off"), row(0.2, 30, 40, 10, "BlinkLeft"))))

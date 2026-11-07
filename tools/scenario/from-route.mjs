@@ -122,6 +122,37 @@ export const SHORT = {
   eventOffsetM: 30,
 };
 
+// Fixed speed cameras. The limit follows the road class. A camera passed at or below the limit
+// tells a prediction nothing, so the driver speeds before some cameras and brakes for them.
+export const CAMERAS = {
+  urbanLimitKph: 50,
+  motorwayLimitKph: 100,
+  perKm: 0.3, // long routes: a Poisson process along the route
+  speedingShare: 0.5, // of long-route cameras; the rest are passed at or below the limit
+  overLimitKph: 15, // target speed over the limit on the stretch before a speeding approach
+  speedingM: 250,
+  brakeMps2: 3,
+  underLimitKph: 5, // speed at the camera after the brake
+  holdM: 30, // held past the camera, then normal speed again
+  endMarginM: 300,
+  minGapM: 100, // to other cameras, caution points, slowdowns, stops and turns
+};
+
+// Caution points. Bumps and school zones only on urban roads.
+export const CAUTION = {
+  bumpPerKm: 0.2, // long routes, one Poisson process for both types
+  schoolZonePerKm: 0.05,
+  bumpKph: 20,
+  bumpBrakeMps2: 2.5,
+  bumpCapM: 5, // bump speed held this far either side
+  bumpApproachKph: 35, // short routes: a bump only where the car is faster than this before it
+  schoolZoneKph: 30,
+  schoolZoneM: 300, // from the event atM, which is the zone start
+  approachM: 100, // room for the braking before a point
+  endMarginM: 300,
+  minGapM: 100,
+};
+
 export const ROUTE_PX = { tolerancePx: 0.1 };
 const FINE_DT_S = 0.02;
 const EARTH_M = 6371008.8;
@@ -351,11 +382,17 @@ export function placeSlowdowns(lengthM, freeSpeedAt, random, traffic = TRAFFIC) 
   }
 }
 
-// The hard brake of a short route. Announced maneuvers cut the route into straights.
-export function placeShortBrake(steps, lengthM, freeSpeedAt, short = SHORT, traffic = TRAFFIC) {
+// Announced maneuvers cut the route into straights, longest first, ties to the earliest.
+export function straights(steps, lengthM) {
   const marks = [0, ...steps.filter(isAnnounced).map((step) => step.atM), lengthM];
-  let [fromM, toM] = [0, 0];
-  for (let i = 1; i < marks.length; i++) if (marks[i] - marks[i - 1] > toM - fromM) [fromM, toM] = [marks[i - 1], marks[i]];
+  const out = [];
+  for (let i = 1; i < marks.length; i++) out.push({ fromM: marks[i - 1], toM: marks[i] });
+  return out.sort((a, b) => b.toM - b.fromM - (a.toM - a.fromM));
+}
+
+// The hard brake of a short route, on its longest straight.
+export function placeShortBrake(steps, lengthM, freeSpeedAt, short = SHORT, traffic = TRAFFIC) {
+  const { fromM, toM } = straights(steps, lengthM)[0];
   const atM = fromM + (toM - fromM) * short.brakeAtFraction;
   return {
     fromM: atM,
@@ -366,6 +403,93 @@ export function placeShortBrake(steps, lengthM, freeSpeedAt, short = SHORT, traf
     eventOffsetM: short.eventOffsetM,
   };
 }
+
+// Road class follows the routed speed of the step the position lies on, as for the approach.
+export function speedLimitKphAt(steps, atM, cameras = CAMERAS) {
+  let kph = 0;
+  for (const step of steps) if (step.atM <= atM) kph = step.kph;
+  return kph >= MOTORWAY_KPH ? cameras.motorwayLimitKph : cameras.urbanLimitKph;
+}
+
+const clashes = ([fromM, toM], taken, gapM) => taken.some(([a, b]) => fromM < b + gapM && toM > a - gapM);
+
+// A camera's span is the stretch its approach, brake and hold take.
+const cameraSpan = (atM, cameras = CAMERAS) => [atM - cameras.speedingM, atM + cameras.holdM];
+
+// A short route plays whole, so its one camera sits on the second longest straight (the longest
+// holds the hard brake) and is always approached speeding. It goes as late on the straight as
+// leaves room for the hold and a stop from the camera speed before the next maneuver.
+export function placeShortCamera(steps, lengthM, cameras = CAMERAS, driver = DRIVER) {
+  const straight = straights(steps, lengthM)[1];
+  if (!straight) return [];
+  const limitKph = speedLimitKphAt(steps, straight.fromM, cameras);
+  const slowMps = kphToMps(limitKph - cameras.underLimitKph);
+  const atM = straight.toM - cameras.holdM - slowMps ** 2 / (2 * driver.brakeMps2);
+  if (atM <= straight.fromM) return [];
+  return [{ atM, limitKph, speeding: true, speedFromM: Math.max(straight.fromM, atM - cameras.speedingM) }];
+}
+
+// Long routes: a Poisson process of cameras clear of the other events. Every candidate draws the
+// same values whether or not it is kept.
+export function placeCameras(steps, lengthM, taken, random, cameras = CAMERAS) {
+  const ratePerM = cameras.perKm / 1000;
+  const out = [];
+  let s = cameras.endMarginM;
+  for (;;) {
+    s += -Math.log(1 - random()) / ratePerM;
+    const speeding = random() < cameras.speedingShare;
+    if (s >= lengthM - cameras.endMarginM) return out;
+    const span = cameraSpan(s, cameras);
+    const limitKph = speedLimitKphAt(steps, s, cameras);
+    const oneClass = speedLimitKphAt(steps, span[0], cameras) === limitKph;
+    if (!oneClass || clashes(span, [...taken, ...out.map((camera) => camera.span)], cameras.minGapM)) continue;
+    out.push({ atM: s, limitKph, speeding, speedFromM: span[0], span });
+  }
+}
+
+// A short route gets one bump in the middle of its third longest straight; whether the car is
+// fast enough before it is checked on the speed profile.
+export function placeShortBump(steps, lengthM) {
+  const straight = straights(steps, lengthM)[2];
+  return straight && straight.toM > straight.fromM ? { atM: (straight.fromM + straight.toM) / 2, type: 'SPEED_BUMP' } : null;
+}
+
+const cautionSpan = ({ atM, type }, caution = CAUTION) => [
+  atM - caution.approachM,
+  atM + (type === 'SCHOOL_ZONE' ? caution.schoolZoneM : caution.bumpCapM),
+];
+
+// Long routes: bumps and school zones on urban roads only, one Poisson process for both.
+export function placeCautionPoints(steps, lengthM, taken, random, caution = CAUTION) {
+  const perKm = caution.bumpPerKm + caution.schoolZonePerKm;
+  const schoolShare = caution.schoolZonePerKm / perKm;
+  const urban = (atM) => speedLimitKphAt(steps, atM) === CAMERAS.urbanLimitKph;
+  const out = [];
+  let s = caution.endMarginM;
+  for (;;) {
+    s += -Math.log(1 - random()) / (perKm / 1000);
+    const type = random() < schoolShare ? 'SCHOOL_ZONE' : 'SPEED_BUMP';
+    if (s >= lengthM - caution.endMarginM) return out;
+    const point = { atM: s, type };
+    const span = cautionSpan(point, caution);
+    if (!urban(span[0]) || !urban(span[1]) || span[1] >= lengthM - caution.endMarginM) continue;
+    if (clashes(span, [...taken, ...out.map(cautionSpan)], caution.minGapM)) continue;
+    out.push(point);
+  }
+}
+
+// Fixed cameras carry their limit and no section average. Types are NaviHelper enum names.
+const buildCameras = (cameras) =>
+  cameras.map((camera, i) => ({
+    atM: Math.round(camera.atM),
+    id: `cam-${i + 1}`,
+    type: 'SPEED_CAMERA_FIX',
+    speedLimit: camera.limitKph,
+    sectionAvrSpeed: 0,
+  }));
+
+const buildCautionPoints = (points) =>
+  points.map((point, i) => ({ atM: Math.round(point.atM), id: `cp-${i + 1}`, type: point.type }));
 
 function roadNameAt(steps, atM) {
   let name = '';
@@ -390,13 +514,50 @@ function buildFrontEvents(slowdowns, steps) {
 }
 
 // Forward and backward acceleration passes over a target speed on a 1 m grid.
-function speedProfile({ cells, baseMps, curvature, stops, slowdowns, launchM = 0 }, driver = DRIVER) {
+// Cameras and caution points change only the target speed; curvature stays from the base speed.
+function speedProfile(
+  { cells, baseMps, curvature, stops, slowdowns, cameras = [], cautionPoints = [], launchM = 0 },
+  driver = DRIVER,
+) {
   const { gridM } = driver;
   const target = new Float64Array(cells + 1);
   const brake = new Float64Array(cells + 1).fill(driver.brakeMps2);
+  const cornerCap = new Float64Array(cells + 1);
   for (let i = 0; i <= cells; i++) {
-    const cornerCap = Math.sqrt(driver.lateralMps2 / Math.max(Math.abs(curvature[i]), 1e-6));
-    target[i] = Math.min(baseMps[i], cornerCap);
+    cornerCap[i] = Math.sqrt(driver.lateralMps2 / Math.max(Math.abs(curvature[i]), 1e-6));
+    target[i] = Math.min(baseMps[i], cornerCap[i]);
+  }
+  const cell = (m) => clamp(Math.round(m / gridM), 0, cells);
+  const capOver = (fromM, toM, mps) => {
+    for (let i = cell(fromM); i <= cell(toM); i++) target[i] = Math.min(target[i], mps);
+  };
+  const brakeBefore = (atM, fromMps, toMps, decel) => {
+    const reachM = Math.max(0, (fromMps ** 2 - toMps ** 2) / (2 * decel)) + 5;
+    for (let i = cell(atM - reachM); i <= cell(atM); i++) brake[i] = Math.max(brake[i], decel);
+  };
+  for (const camera of cameras) {
+    const limitMps = kphToMps(camera.limitKph);
+    const holdToM = camera.atM + CAMERAS.holdM;
+    if (!camera.speeding) {
+      capOver(camera.speedFromM, holdToM, limitMps);
+      continue;
+    }
+    const fastMps = kphToMps(camera.limitKph + CAMERAS.overLimitKph);
+    const slowMps = kphToMps(camera.limitKph - CAMERAS.underLimitKph);
+    for (let i = cell(camera.speedFromM); i < cell(camera.atM); i++) target[i] = Math.min(fastMps, cornerCap[i]);
+    capOver(camera.atM, holdToM, slowMps);
+    brakeBefore(camera.atM, fastMps, slowMps, CAMERAS.brakeMps2);
+  }
+  for (const point of cautionPoints) {
+    if (point.type === 'SCHOOL_ZONE') {
+      capOver(point.atM, point.atM + CAUTION.schoolZoneM, kphToMps(CAUTION.schoolZoneKph));
+      continue;
+    }
+    const bumpMps = kphToMps(CAUTION.bumpKph);
+    const fromM = point.atM - CAUTION.bumpCapM;
+    const approachMps = Math.max(...target.subarray(cell(fromM - CAUTION.approachM), cell(fromM) + 1));
+    capOver(fromM, point.atM + CAUTION.bumpCapM, bumpMps);
+    brakeBefore(fromM, approachMps, bumpMps, CAUTION.bumpBrakeMps2);
   }
   for (const slowdown of slowdowns) {
     const from = Math.round(slowdown.fromM / gridM);
@@ -740,7 +901,30 @@ export function buildScenario({ id, title }, osrm) {
     : placeSlowdowns(route.lengthM, freeSpeedAt, seededRandom(`${id}:traffic`));
   const launchM = short ? SHORT.launchM : 0;
 
-  const profile = speedProfile({ cells, baseMps, curvature, stops, slowdowns, launchM });
+  let cameras;
+  let cautionPoints;
+  if (short) {
+    cameras = placeShortCamera(route.steps, route.lengthM);
+    const bump = placeShortBump(route.steps, route.lengthM);
+    cautionPoints = bump ? [bump] : [];
+    if (bump) {
+      const { speed } = speedProfile({ cells, baseMps, curvature, stops, slowdowns, cameras, cautionPoints, launchM });
+      const from = clamp(Math.round((bump.atM - CAUTION.approachM) / gridM), 0, cells);
+      const approachMps = Math.max(...speed.slice(from, Math.round(bump.atM / gridM) + 1));
+      if (approachMps < kphToMps(CAUTION.bumpApproachKph)) cautionPoints = [];
+    }
+  } else {
+    const taken = [
+      ...stops.map((stop) => [stop.atM, stop.atM]),
+      ...route.steps.filter(isAnnounced).map((step) => [step.atM, step.atM]),
+      ...slowdowns.map((slowdown) => [slowdown.fromM, slowdown.toM]),
+    ];
+    cameras = placeCameras(route.steps, route.lengthM, taken, seededRandom(`${id}:cameras`));
+    taken.push(...cameras.map((camera) => camera.span));
+    cautionPoints = placeCautionPoints(route.steps, route.lengthM, taken, seededRandom(`${id}:caution`));
+  }
+
+  const profile = speedProfile({ cells, baseMps, curvature, stops, slowdowns, cameras, cautionPoints, launchM });
   const fineSpeed = speedOverTime(profile);
   const spans = signalSpans(route.steps, steeringByCell);
   const wheels = holdWheel({ fineSpeed, steeringByCell, random: seededRandom(`${id}:steering`) });
@@ -757,6 +941,8 @@ export function buildScenario({ id, title }, osrm) {
     routeLengthM: Math.round(route.lengthM),
     turns: buildTurns(route.steps, title),
     frontEvents: buildFrontEvents(slowdowns, route.steps),
+    cameras: buildCameras(cameras),
+    cautionPoints: buildCautionPoints(cautionPoints),
     timeline,
   };
 }
@@ -771,7 +957,7 @@ export function generate(entry) {
 // Standard JSON with one line per array element and no indent: real-time timelines hold up to
 // 25000 rows, and the app parser reads named row keys, so this is as small as the format allows.
 export function formatScenario(scenario) {
-  const { routePx, turns, frontEvents, timeline, ...head } = scenario;
+  const { routePx, turns, frontEvents, cameras, cautionPoints, timeline, ...head } = scenario;
   const list = (items) => (items.length === 0 ? '[]' : `[\n${items.map((item) => JSON.stringify(item)).join(',\n')}\n]`);
   const headLines = Object.entries(head).map(([key, value]) => `  ${JSON.stringify(key)}: ${JSON.stringify(value)}`);
   const body = [
@@ -779,6 +965,8 @@ export function formatScenario(scenario) {
     `  "routePx": ${JSON.stringify(routePx)}`,
     `  "turns": ${list(turns)}`,
     `  "frontEvents": ${list(frontEvents)}`,
+    `  "cameras": ${list(cameras)}`,
+    `  "cautionPoints": ${list(cautionPoints)}`,
     `  "timeline": ${list(timeline)}`,
   ];
   return `{\n${body.join(',\n')}\n}\n`;

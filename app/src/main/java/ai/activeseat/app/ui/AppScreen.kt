@@ -64,7 +64,7 @@ private fun ControlBar(
 private fun status(ui: UiState, player: PlayerState): String {
     val speed = if (ui.speedConnected) String.format(Locale.US, "%.0f km/h", ui.signal.speedKph) else "속도 없음"
     val steering = String.format(Locale.US, "조향 %+.0f°", ui.signal.steeringDeg)
-    return "$speed · $steering · ${ui.playerError ?: describe(player)} · ${ui.predictionStatus}"
+    return "$speed · $steering · ${ui.playerError ?: describe(player)} · ${ui.motionStatus}"
 }
 
 private fun describe(player: PlayerState): String = when (player) {
