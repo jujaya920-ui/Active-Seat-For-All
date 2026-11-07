@@ -19,6 +19,7 @@ class ScenarioPlayerTest {
         val controls = mutableListOf<Pair<Long, ConsoleControls>>()
         val turns = mutableListOf<String>()
         val gears = mutableListOf<String>()
+        val seats = mutableListOf<Pair<String, Boolean>>()
         var failControls = false
 
         override suspend fun session() { sessions += now() }
@@ -28,6 +29,7 @@ class ScenarioPlayerTest {
         }
         override suspend fun turnSignal(mode: String) { turns += mode }
         override suspend fun gear(gear: String) { gears += gear }
+        override suspend fun seatOccupied(area: String, occupied: Boolean) { seats += area to occupied }
     }
 
     private fun scenario() = Scenario(
@@ -64,6 +66,19 @@ class ScenarioPlayerTest {
         assertEquals(listOf("BlinkLeft", "Off", "BlinkRight", "Off"), console.turns)
         assertEquals(listOf("Drive"), console.gears)
         assertEquals(PlayerState.Finished(0), player.state.value)
+        assertTrue("no occupiedSeats leaves the console alone", console.seats.isEmpty())
+    }
+
+    @Test
+    fun seatsTheScenarioRidersAndEmptiesTheRest() = runTest {
+        val console = console()
+
+        ScenarioPlayer(console, { currentTime }).play(scenario().copy(occupiedSeats = listOf("driver", "passenger")))
+
+        assertEquals(
+            listOf("driver" to true, "passenger" to true, "rear_left" to false, "rear_right" to false),
+            console.seats,
+        )
     }
 
     @Test

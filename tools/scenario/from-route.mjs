@@ -936,6 +936,8 @@ export function buildScenario({ id, title }, osrm) {
     mapImage: `maps/${id}.webp`,
     mapSize: [width, height],
     originRoad: osrm.routes[0].legs[0].steps.find((step) => step.name).name,
+    // The app gives hints only with a passenger aboard, read from the car as in real use.
+    occupiedSeats: ['driver', 'passenger'],
     demoWindow: chooseDemoWindow(timeline),
     routePx: buildRoutePx(route),
     routeLengthM: Math.round(route.lengthM),

@@ -15,6 +15,9 @@ interface ConsoleApi {
     suspend fun controls(controls: ConsoleControls)
     suspend fun turnSignal(mode: String)
     suspend fun gear(gear: String)
+
+    /** `area` is the console's seat name: driver, passenger, rear_left or rear_right. */
+    suspend fun seatOccupied(area: String, occupied: Boolean)
 }
 
 /** The emulator's Virtual Console HTTP API. */
@@ -33,6 +36,9 @@ class ConsoleClient(
     override suspend fun turnSignal(mode: String) = request("PUT", "/vehicle/turn-signal?mode=$mode")
 
     override suspend fun gear(gear: String) = request("PUT", "/vehicle/gear?gear=$gear")
+
+    override suspend fun seatOccupied(area: String, occupied: Boolean) =
+        request("PUT", "/vehicle/seat?area=$area&kind=occupied&value=$occupied")
 
     private suspend fun request(method: String, path: String) = withContext(Dispatchers.IO) {
         val connection = URL(baseUrl + path).openConnection() as HttpURLConnection

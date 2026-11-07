@@ -23,6 +23,9 @@ const val BRIDGE_WARMUP_MS = 3000L
 // Keeps the heartbeat alive after the reset so the zeros reach the vehicle.
 const val RESET_SETTLE_MS = 1000L
 
+/** Every seat the Virtual Console's Seat Occupancy control knows. */
+val CONSOLE_SEATS = listOf("driver", "passenger", "rear_left", "rear_right")
+
 sealed interface PlayerState {
     data object Idle : PlayerState
     data object Warmup : PlayerState
@@ -59,6 +62,11 @@ class ScenarioPlayer(
                 _state.value = PlayerState.Warmup
                 delay(BRIDGE_WARMUP_MS)
                 write { console.gear("Drive") }
+                // The app reads occupancy only through the Vehicle SDK, as in a real car, so the
+                // scenario seats its riders in the console; with every seat empty no hint goes out.
+                scenario.occupiedSeats?.let { seated ->
+                    CONSOLE_SEATS.forEach { write { console.seatOccupied(it, it in seated) } }
+                }
                 playTimeline(scenario, fromSec, toSec)
             } finally {
                 withContext(NonCancellable) {

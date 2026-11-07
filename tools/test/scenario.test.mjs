@@ -79,12 +79,13 @@ for (const entry of ROUTES) {
     assert.ok(Math.abs(total - route.lengthM) / route.lengthM <= 0.01);
   });
 
-  test(`${entry.id}: stays parseable and adds only demoWindow, cameras and caution points`, () => {
+  test(`${entry.id}: stays parseable and adds only demoWindow, seats, cameras and caution points`, () => {
     const parsed = JSON.parse(formatScenario(scenario));
     assert.deepEqual(Object.keys(parsed).sort(), [
-      'cameras', 'cautionPoints', 'demoWindow', 'frontEvents', 'id', 'mapImage', 'mapSize', 'originRoad', 'routeLengthM', 'routePx',
-      'timeline', 'title', 'turns',
+      'cameras', 'cautionPoints', 'demoWindow', 'frontEvents', 'id', 'mapImage', 'mapSize', 'occupiedSeats', 'originRoad',
+      'routeLengthM', 'routePx', 'timeline', 'title', 'turns',
     ]);
+    assert.deepEqual(parsed.occupiedSeats, ['driver', 'passenger']);
     assert.deepEqual(parsed.cameras, scenario.cameras);
     assert.deepEqual(parsed.cautionPoints, scenario.cautionPoints);
     assert.ok(parsed.routePx.every((point) => point.every(Number.isInteger)));

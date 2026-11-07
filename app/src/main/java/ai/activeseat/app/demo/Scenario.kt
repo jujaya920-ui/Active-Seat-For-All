@@ -43,6 +43,8 @@ data class Scenario(
     val demoWindow: DemoWindow? = null,
     val mapSize: Pair<Int, Int> = 0 to 0,
     val originRoad: String = "",
+    /** Console seat names with someone aboard; null leaves the console's occupancy as it is. */
+    val occupiedSeats: List<String>? = null,
 ) {
     val durationSec: Double get() = timeline.last().t
 
@@ -121,6 +123,7 @@ fun parseScenario(json: String): Scenario {
         demoWindow = root.optJSONObject("demoWindow")?.let { DemoWindow(it.getDouble("fromSec"), it.getDouble("toSec")) },
         mapSize = mapSize.getInt(0) to mapSize.getInt(1),
         originRoad = root.optString("originRoad"),
+        occupiedSeats = root.optJSONArray("occupiedSeats")?.let { seats -> List(seats.length()) { seats.getString(it) } },
         // Older and test scenarios have neither array.
         cameras = root.optJSONArray("cameras")?.objects().orEmpty().map {
             CameraMark(it.getDouble("atM"), it.getString("id"), it.getString("type"), it.getInt("speedLimit"), it.optInt("sectionAvrSpeed"))

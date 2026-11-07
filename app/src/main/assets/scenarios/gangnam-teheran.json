@@ -4,6 +4,7 @@
   "mapImage": "maps/gangnam-teheran.webp",
   "mapSize": [1957,2115],
   "originRoad": "강남대로",
+  "occupiedSeats": ["driver","passenger"],
   "demoWindow": {"fromSec":0,"toSec":96.2},
   "routeLengthM": 834,
   "routePx": [[975,1215],[964,1186],[954,1161],[947,1149],[936,1120],[913,1060],[900,1026],[933,1014],[979,996],[1048,970],[1056,967],[1050,951],[1037,916],[1032,900]],

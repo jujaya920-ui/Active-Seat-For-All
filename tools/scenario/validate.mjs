@@ -20,9 +20,10 @@ import {
 } from './common.mjs';
 
 const TOP_KEYS = [
-  'id', 'title', 'mapImage', 'mapSize', 'originRoad', 'routePx', 'routeLengthM', 'turns', 'frontEvents', 'cameras', 'cautionPoints',
-  'timeline',
+  'id', 'title', 'mapImage', 'mapSize', 'originRoad', 'occupiedSeats', 'routePx', 'routeLengthM', 'turns', 'frontEvents', 'cameras',
+  'cautionPoints', 'timeline',
 ];
+const CONSOLE_SEATS = ['driver', 'passenger', 'rear_left', 'rear_right'];
 const POINT_LISTS = {
   cameras: { keys: ['atM', 'id', 'type', 'speedLimit', 'sectionAvrSpeed'], types: CAMERA_TYPES },
   cautionPoints: { keys: ['atM', 'id', 'type'], types: CAUTION_POINT_TYPES },
@@ -51,6 +52,12 @@ function checkFormat(s, errors) {
   if (typeof s.title !== 'string' || s.title === '') errors.push('title must be a non-empty string');
   if (s.mapImage !== `maps/${s.id}.webp`) errors.push(`mapImage must be maps/${s.id}.webp`);
   if (typeof s.originRoad !== 'string' || s.originRoad === '') errors.push('originRoad must be a non-empty string');
+  const seats = s.occupiedSeats;
+  if (!Array.isArray(seats) || !seats.every((seat) => CONSOLE_SEATS.includes(seat)) || new Set(seats).size !== seats.length) {
+    errors.push(`occupiedSeats must list distinct seats from: ${CONSOLE_SEATS.join(', ')}`);
+  } else if (!seats.some((seat) => seat !== 'driver')) {
+    errors.push('occupiedSeats needs a passenger, or the app gives no hint');
+  }
   const [mapWidth, mapHeight] = Array.isArray(s.mapSize) ? s.mapSize : [];
   if (!isNumber(mapWidth) || !isNumber(mapHeight)) errors.push('mapSize must be [width, height]');
   if (!isNumber(s.routeLengthM) || s.routeLengthM <= 0) errors.push('routeLengthM must be positive');
