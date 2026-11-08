@@ -5,6 +5,8 @@ import ai.activeseat.app.hardware.ModuleCommand
 import ai.activeseat.app.hint.Hint
 import ai.activeseat.app.hint.LateralCue
 import ai.activeseat.app.hint.LongitudinalCue
+import ai.activeseat.app.seat.YawContext
+import ai.activeseat.app.vehicle.SeatPosition
 import ai.activeseat.app.hardware.Vibration
 import ai.activeseat.app.hardware.toHardwareCommand
 import org.junit.Assert.assertEquals
@@ -13,6 +15,8 @@ import org.junit.Assert.assertTrue
 import org.junit.Test
 
 class SeatModelTest {
+    private val at36 = YawContext(36.0, SeatPosition.ROW_1_RIGHT)
+
     private val out = FloatArray(2)
 
     private fun screenX(camera: SeatCamera, rotation: FloatArray, x: Float, y: Float, z: Float): Float {
@@ -89,7 +93,7 @@ class SeatModelTest {
     fun `motion eases to the command and only the cushion gets front and rear vibration`() {
         val motion = SeatMotion()
         val brake = Hint(longitudinal = LongitudinalCue.BRAKE, longitudinalStrength = 1.0, longitudinalMps2 = 4.0)
-            .toHardwareCommand()
+            .toHardwareCommand(at36)
         repeat(400) { motion.step(0.016f, brake) }
         assertEquals(brake.headrest.pitchDeg.toFloat(), motion.pitchDeg, 0.01f)
         assertTrue(motion.pitchDeg < 0)
@@ -107,7 +111,7 @@ class SeatModelTest {
     @Test
     fun `vibration restarts from the centre for each event`() {
         val motion = SeatMotion()
-        val left = Hint(lateral = LateralCue.LEFT, lateralStrength = 1.0).toHardwareCommand()
+        val left = Hint(lateral = LateralCue.LEFT, lateralStrength = 1.0).toHardwareCommand(at36)
         repeat(100) { motion.step(0.016f, left) }
         assertTrue(motion.phase[PART_BACKREST][ZONE_LEFT] > 0)
         repeat(300) { motion.step(0.016f, HardwareCommand()) }
