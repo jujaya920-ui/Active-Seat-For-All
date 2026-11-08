@@ -92,7 +92,7 @@ for (const entry of ROUTES) {
     if (entry.drivenFile) keys.push('plannedRoute');
     assert.deepEqual(Object.keys(parsed).sort(), keys.sort());
     assert.deepEqual(parsed.plannedRoute, scenario.plannedRoute);
-    assert.deepEqual(parsed.occupiedSeats, ['driver', 'passenger']);
+    assert.deepEqual(parsed.occupiedSeats, ['driver', 'passenger', 'rear_left']);
     assert.deepEqual(parsed.cameras, scenario.cameras);
     assert.deepEqual(parsed.cautionPoints, scenario.cautionPoints);
     assert.ok(parsed.routePx.every((point) => point.every(Number.isInteger)));
