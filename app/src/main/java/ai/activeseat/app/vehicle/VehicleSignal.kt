@@ -43,3 +43,10 @@ fun Map<SeatPosition, Boolean>.hasPassenger(): Boolean {
     val passengers = filterKeys { it != DRIVER_SEAT }
     return passengers.isEmpty() || passengers.values.any { it }
 }
+
+/**
+ * The ON/OFF model for one seat: a forward gear and someone in that very seat. A seat that has not
+ * reported counts as taken only when no passenger seat has reported at all, as in [hasPassenger].
+ */
+fun VehicleSignal.runsMotionFor(position: SeatPosition): Boolean =
+    gear.runsMotion() && (seats[position] ?: seats.filterKeys { it != DRIVER_SEAT }.isEmpty())
