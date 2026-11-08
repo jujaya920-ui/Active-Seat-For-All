@@ -98,15 +98,6 @@ fun turnLabel(type: String): String = when (type) {
     else -> type
 }
 
-fun turnArrow(type: String): String = when (type) {
-    "TURN_LEFT" -> "↰"
-    "TURN_RIGHT" -> "↱"
-    "TURN_KEEP_L" -> "↖"
-    "TURN_KEEP_R", "TURN_EXIT_IC_R", "TURN_ENTER_IC_C" -> "↗"
-    "TURN_ARRIVE" -> "⚑"
-    else -> "↑"
-}
-
 fun formatDistance(metres: Double): String =
     if (metres < 1000) "${metres.roundToInt()}m" else String.format(Locale.US, "%.1fkm", metres / 1000)
 
@@ -142,15 +133,21 @@ fun NavPanel(ui: UiState, actions: NavActions, modifier: Modifier) {
         tween(CAR_GLIDE_MS, easing = LinearEasing),
         label = "fraction",
     )
+    val shownFraction by animateFloatAsState(
+        (state?.shownFraction ?: 0.0).toFloat(),
+        tween(CAR_GLIDE_MS, easing = LinearEasing),
+        label = "shownFraction",
+    )
     var overlayHeightPx by remember { mutableIntStateOf(0) }
     val density = LocalDensity.current.density
 
     BoxWithConstraints(modifier = modifier.clipToBounds().background(Color(0xFFF1F4F9))) {
-        val route = ui.route
-        val car = route?.pointAt(fraction.toDouble())
+        // The car is on the driven route; the guidance may draw another one until a reroute.
+        val car = ui.route?.pointAt(fraction.toDouble())
+        val shown = state?.shownRoute ?: ui.route
         val camera = when {
-            ui.screen == NavScreen.PREVIEW && route != null -> overviewCamera(
-                route,
+            ui.screen == NavScreen.PREVIEW && shown != null -> overviewCamera(
+                shown,
                 constraints.maxWidth.toFloat(),
                 constraints.maxHeight.toFloat(),
                 topInset = overlayHeightPx.toFloat(),
@@ -164,10 +161,11 @@ fun NavPanel(ui: UiState, actions: NavActions, modifier: Modifier) {
         }
         NavMap(
             map = ui.map,
-            route = route,
+            route = shown,
             showRoute = ui.screen == NavScreen.PREVIEW || ui.screen == NavScreen.GUIDING,
             camera = camera,
-            carFraction = fraction,
+            passedFraction = shownFraction,
+            car = car,
             carHeadingDeg = heading,
             modifier = Modifier.fillMaxSize(),
         )
@@ -422,8 +420,9 @@ private fun GuidingOverlay(state: NavState?, actions: NavActions) {
         Column(modifier = Modifier.fillMaxWidth().background(Color(0xFF1A1A1A)).padding(horizontal = 28.dp, vertical = 20.dp)) {
             when {
                 state == null -> Unit
-                state.arrived -> GuidanceTitle("⚑", "목적지 도착", null)
-                else -> state.nextTurn?.let { NextTurn(it, state) } ?: GuidanceTitle("↑", "직진", null)
+                state.arrived -> GuidanceTitle(TurnIcon.ARRIVE, "목적지 도착", null)
+                state.rerouting -> GuidanceTitle(TurnIcon.REROUTE, "경로 재검색 중", null)
+                else -> state.nextTurn?.let { NextTurn(it, state) } ?: GuidanceTitle(TurnIcon.STRAIGHT, "직진", null)
             }
         }
         state?.takeUnless { it.arrived }?.frontEvent?.let { event ->
@@ -456,13 +455,13 @@ private fun GuidingOverlay(state: NavState?, actions: NavActions) {
 
 @Composable
 private fun NextTurn(turn: NavMark, state: NavState) {
-    GuidanceTitle(turnArrow(turn.type), "${state.nextTurnDistanceM}m ${turnLabel(turn.type)}", turn.description)
+    GuidanceTitle(turnIcon(turn.type), "${state.nextTurnDistanceM}m ${turnLabel(turn.type)}", turn.description)
 }
 
 @Composable
-private fun GuidanceTitle(arrow: String, title: String, detail: String?) {
+private fun GuidanceTitle(icon: TurnIcon, title: String, detail: String?) {
     Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(20.dp)) {
-        Text(arrow, color = Color.White, fontSize = 64.sp, fontWeight = FontWeight.Bold)
+        TurnIconView(icon, title, Modifier.size(72.dp))
         Column {
             Text(title, color = Color.White, fontSize = 40.sp, fontWeight = FontWeight.Bold)
             detail?.let { Text(it, color = Color(0xFFD0D0D0), fontSize = 24.sp, maxLines = 1, overflow = TextOverflow.Ellipsis) }

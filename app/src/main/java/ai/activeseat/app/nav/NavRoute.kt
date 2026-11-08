@@ -39,6 +39,14 @@ data class NavRoute(
         return legs.last().pointAfter(remainingPx)
     }
 
+    fun fractionAt(progressM: Double): Double = if (lengthM > 0) (progressM / lengthM).coerceIn(0.0, 1.0) else 1.0
+
+    fun upcomingTurn(progressM: Double): NavMark? = turns.firstOrNull { it.atM > progressM }
+
+    fun upcomingFrontEvent(progressM: Double): NavMark? = frontEvents.firstOrNull {
+        it.atM > progressM && it.atM - progressM <= FRONT_EVENT_RANGE_M
+    }
+
     private class Leg(val index: Int, val from: Pair<Int, Int>, to: Pair<Int, Int>) {
         val dx = (to.first - from.first).toDouble()
         val dy = (to.second - from.second).toDouble()
@@ -56,6 +64,12 @@ data class NavRoute(
 /** A position on the polyline, heading in degrees clockwise from up. */
 data class RoutePoint(val x: Float, val y: Float, val headingDeg: Float, val segment: Int)
 
+/**
+ * What the screen shows. `progressM`, `fraction`, the car and `arrived` are physical, on the route
+ * actually driven. `shownRoute` is the route the guidance draws, passed up to `shownFraction`; it
+ * is the driven route except before a reroute, when the car can leave it. The turn, front event and
+ * remaining distance follow the guidance.
+ */
 data class NavState(
     val progressM: Double,
     val remainingM: Double,
@@ -68,4 +82,8 @@ data class NavState(
     val frontEvent: NavMark?,
     val frontEventDistanceM: Int?,
     val arrived: Boolean,
+    val shownRoute: NavRoute,
+    val shownFraction: Double,
+    /** The navigation is searching for a new route and guides nothing. */
+    val rerouting: Boolean = false,
 )

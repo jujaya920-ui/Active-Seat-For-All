@@ -26,6 +26,17 @@ data class ScenarioFrame(
     val turnSignal: String,
 )
 
+/**
+ * The route the navigation guided at first, in the same map pixels as the driven route. The two
+ * are the same up to `leaveAtM`, where the driver left it.
+ */
+data class ScenarioPlannedRoute(
+    val routePx: List<Pair<Int, Int>>,
+    val routeLengthM: Double,
+    val turns: List<RouteMark>,
+    val leaveAtM: Double,
+)
+
 /** The part of a long route played on stage, in scenario seconds. */
 data class DemoWindow(val fromSec: Double, val toSec: Double)
 
@@ -45,6 +56,8 @@ data class Scenario(
     val originRoad: String = "",
     /** Console seat names with someone aboard; null leaves the console's occupancy as it is. */
     val occupiedSeats: List<String>? = null,
+    /** Present when the driver leaves the guided route; the top-level route is the one driven. */
+    val plannedRoute: ScenarioPlannedRoute? = null,
 ) {
     val durationSec: Double get() = timeline.last().t
 
@@ -106,16 +119,12 @@ fun parseScenario(json: String): Scenario {
     require(timeline.isNotEmpty()) { "timeline is empty" }
     require(timeline.zipWithNext().all { (a, b) -> a.t < b.t }) { "timeline must be sorted by t" }
 
-    val route = root.getJSONArray("routePx")
     val mapSize = root.getJSONArray("mapSize")
     return Scenario(
         id = root.getString("id"),
         title = root.getString("title"),
         mapImage = root.getString("mapImage"),
-        routePx = List(route.length()) { i ->
-            val point = route.getJSONArray(i)
-            point.getInt(0) to point.getInt(1)
-        },
+        routePx = root.getJSONArray("routePx").points(),
         routeLengthM = root.getDouble("routeLengthM"),
         turns = root.getJSONArray("turns").objects().map { it.toRouteMark() },
         frontEvents = root.getJSONArray("frontEvents").objects().map { it.toRouteMark() },
@@ -131,7 +140,20 @@ fun parseScenario(json: String): Scenario {
         cautionPoints = root.optJSONArray("cautionPoints")?.objects().orEmpty().map {
             CautionMark(it.getDouble("atM"), it.getString("id"), it.getString("type"))
         },
+        plannedRoute = root.optJSONObject("plannedRoute")?.let {
+            ScenarioPlannedRoute(
+                routePx = it.getJSONArray("routePx").points(),
+                routeLengthM = it.getDouble("routeLengthM"),
+                turns = it.getJSONArray("turns").objects().map { mark -> mark.toRouteMark() },
+                leaveAtM = it.getDouble("leaveAtM"),
+            )
+        },
     )
+}
+
+private fun JSONArray.points(): List<Pair<Int, Int>> = List(length()) { i ->
+    val point = getJSONArray(i)
+    point.getInt(0) to point.getInt(1)
 }
 
 private fun JSONArray.objects(): List<JSONObject> = List(length()) { getJSONObject(it) }

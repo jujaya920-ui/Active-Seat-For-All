@@ -22,9 +22,11 @@ import {
   STOPS,
   TRAFFIC,
   chooseDemoWindow,
+  drivenPath,
   formatScenario,
   generate,
   holdWheel,
+  leaveAtM,
   outputPath,
   parseRoute,
   placeCameras,
@@ -44,11 +46,14 @@ const built = new Map(ROUTES.map((entry) => [entry.id, generate(entry)]));
 const scenarios = [...built.values()];
 const fresh = () => structuredClone(built.get('gangnam-pangyo'));
 const errorsOf = (scenario) => validateScenario(scenario).errors;
-const realRoute = (entry) => parseRoute(JSON.parse(readFileSync(routePath(entry), 'utf8')));
+const readRoute = (path) => parseRoute(JSON.parse(readFileSync(path, 'utf8')));
+const realRoute = (entry) => readRoute(drivenPath(entry));
+const plannedRoute = (entry) => readRoute(routePath(entry));
+const offRoute = ROUTES.find((entry) => entry.drivenFile);
 
-function expectError(name, mutate, pattern) {
+function expectError(name, mutate, pattern, source = fresh) {
   test(`rejects ${name}`, () => {
-    const scenario = fresh();
+    const scenario = source();
     mutate(scenario);
     const errors = errorsOf(scenario);
     assert.ok(errors.some((error) => pattern.test(error)), `no ${pattern} in:\n${errors.slice(0, 5).join('\n')}`);
@@ -79,12 +84,15 @@ for (const entry of ROUTES) {
     assert.ok(Math.abs(total - route.lengthM) / route.lengthM <= 0.01);
   });
 
-  test(`${entry.id}: stays parseable and adds only demoWindow, seats, cameras and caution points`, () => {
+  test(`${entry.id}: stays parseable and adds only demoWindow, seats, cameras, caution points and a planned route`, () => {
     const parsed = JSON.parse(formatScenario(scenario));
-    assert.deepEqual(Object.keys(parsed).sort(), [
+    const keys = [
       'cameras', 'cautionPoints', 'demoWindow', 'frontEvents', 'id', 'mapImage', 'mapSize', 'occupiedSeats', 'originRoad',
       'routeLengthM', 'routePx', 'timeline', 'title', 'turns',
-    ]);
+    ];
+    if (entry.drivenFile) keys.push('plannedRoute');
+    assert.deepEqual(Object.keys(parsed).sort(), keys.sort());
+    assert.deepEqual(parsed.plannedRoute, scenario.plannedRoute);
     assert.deepEqual(parsed.occupiedSeats, ['driver', 'passenger']);
     assert.deepEqual(parsed.cameras, scenario.cameras);
     assert.deepEqual(parsed.cautionPoints, scenario.cautionPoints);
@@ -167,11 +175,14 @@ for (const entry of ROUTES) {
   });
 
   if (entry.id !== 'gangnam-pangyo') {
-    test(`${entry.id}: holds a left, a right, a hard brake and a hard launch within 2 minutes`, () => {
+    // A driven route that leaves the guided one has only the corners its own turns make.
+    const sides = entry.drivenFile
+      ? [...new Set(scenario.turns.map((turn) => (/_L$|LEFT/.test(turn.type) ? 'left' : /_R$|RIGHT/.test(turn.type) ? 'right' : null)).filter(Boolean))]
+      : ['left', 'right'];
+    test(`${entry.id}: holds a corner each way it turns (${sides.join(', ')}), a hard brake and a hard launch within 2 minutes`, () => {
       const { corners, hardAccels, hardBrakes } = detectManeuvers(scenario.timeline);
       assert.ok(scenario.timeline.at(-1).t <= 120);
-      assert.ok(corners.some((corner) => corner.direction === 'left'));
-      assert.ok(corners.some((corner) => corner.direction === 'right'));
+      for (const side of sides) assert.ok(corners.some((corner) => corner.direction === side), side);
       assert.equal(hardBrakes.length, 1);
       assert.equal(hardAccels.length, 1);
     });
@@ -213,6 +224,41 @@ test('routePx starts and ends on the route ends', () => {
   const { routePx } = built.get(entry.id);
   assert.deepEqual(routePx[0], toPx(route.coordinates[0]));
   assert.deepEqual(routePx.at(-1), toPx(route.coordinates.at(-1)));
+});
+
+// Two routes along one straight east from the origin; planned turns north at 200 m.
+const RAD = Math.PI / 180;
+const toLon = (metres, lat) => 127 + metres / (6371008.8 * Math.cos(lat * RAD) * RAD);
+const toLat = (metres) => 37.5 + metres / (6371008.8 * RAD);
+const synthetic = (points) => {
+  const atVertex = [0];
+  for (let i = 1; i < points.length; i++) atVertex.push(atVertex[i - 1] + Math.hypot(points[i][0] - points[i - 1][0], points[i][1] - points[i - 1][1]));
+  return { coordinates: points.map(([x, y]) => [toLon(x, 37.5), toLat(y)]), atVertex, lengthM: atVertex.at(-1) };
+};
+
+test('leaveAtM is the length of the shared stretch', () => {
+  const planned = synthetic([[0, 0], [100, 0], [200, 0], [200, 300]]);
+  const driven = synthetic([[0, 0], [100, 0], [450, 0], [450, 300]]);
+  assert.ok(Math.abs(leaveAtM(driven, planned) - 200) <= 0.5, String(leaveAtM(driven, planned)));
+  const early = synthetic([[0, 0], [60, 0], [60, -400]]);
+  assert.ok(Math.abs(leaveAtM(early, planned) - 60) <= 0.5);
+  assert.equal(leaveAtM(planned, planned), null);
+});
+
+test('the off-route scenario leaves at the turn it misses, on the guided route\'s map', () => {
+  const scenario = built.get(offRoute.id);
+  const planned = plannedRoute(offRoute);
+  const { toPx, width, height } = fitRoute(planned.coordinates);
+  const { plannedRoute: guided } = scenario;
+  assert.deepEqual(scenario.mapSize, [width, height]);
+  assert.deepEqual(guided.routePx[0], toPx(planned.coordinates[0]));
+  assert.deepEqual(guided.routePx.at(-1), toPx(planned.coordinates.at(-1)));
+  assert.deepEqual(scenario.routePx[0], guided.routePx[0]);
+  assert.equal(guided.routeLengthM, Math.round(planned.lengthM));
+  assert.equal(guided.turns.at(-1).description, `${offRoute.title} 도착`);
+  const missed = guided.turns.find((turn) => turn.type !== 'TURN_ARRIVE');
+  assert.ok(Math.abs(guided.leaveAtM - missed.atM) <= 2, `${guided.leaveAtM} vs ${missed.atM}`);
+  assert.ok(Math.abs(guided.leaveAtM - leaveAtM(realRoute(offRoute), planned)) < 1e-9);
 });
 
 test('the generator holds no per-route parameter', () => {
@@ -341,6 +387,27 @@ expectError('an invented caution point type', (s) => {
 expectError('a caution point with an extra key', (s) => {
   s.cautionPoints = [{ atM: 100, id: 'cp-1', type: 'SPEED_BUMP', speedLimit: 20 }];
 }, /keys must be atM, id, type/);
+
+const offRouteScenario = () => structuredClone(built.get(offRoute.id));
+expectError('a planned route missing leaveAtM', (s) => { delete s.plannedRoute.leaveAtM; }, /plannedRoute keys/, offRouteScenario);
+expectError('a planned route that is not an object', (s) => { s.plannedRoute = []; }, /plannedRoute keys/, offRouteScenario);
+expectError('a planned route of no length', (s) => { s.plannedRoute.routeLengthM = 0; }, /plannedRoute.routeLengthM must be positive/, offRouteScenario);
+expectError('a planned route outside the map', (s) => { s.plannedRoute.routePx[1] = [-1, 10]; }, /plannedRoute.routePx must stay inside/, offRouteScenario);
+expectError('an invented planned turn type', (s) => { s.plannedRoute.turns[0].type = 'TURN_SOMEWHERE'; }, /plannedRoute.turns\[0\].type/, offRouteScenario);
+expectError('planned turns out of order', (s) => { s.plannedRoute.turns.reverse(); }, /plannedRoute.turns must be in increasing/, offRouteScenario);
+expectError('a planned turn with no polyline vertex', (s) => {
+  s.plannedRoute.routePx = [s.plannedRoute.routePx[0], s.plannedRoute.routePx.at(-1)];
+}, /plannedRoute turn 0: no polyline vertex/, offRouteScenario);
+expectError('a leaveAtM off the routes', (s) => { s.plannedRoute.leaveAtM = s.plannedRoute.routeLengthM; }, /leaveAtM must lie inside/, offRouteScenario);
+expectError('a leaveAtM away from the missed turn', (s) => { s.plannedRoute.leaveAtM += 40; }, /not within 15 m of the missed turn/, offRouteScenario);
+expectError('a blinker toward the missed turn', (s) => {
+  const travelled = distances(s.timeline);
+  const missed = s.plannedRoute.turns[0];
+  const mode = /RIGHT|_R$/.test(missed.type) ? 'BlinkRight' : 'BlinkLeft';
+  s.timeline.forEach((row, k) => {
+    if (travelled[k] > s.plannedRoute.leaveAtM - 30 && travelled[k] <= s.plannedRoute.leaveAtM) row.turnSignal = mode;
+  });
+}, /toward the missed turn/, offRouteScenario);
 
 test('the enum lists cover every type the generator writes', () => {
   assert.ok(CAMERA_TYPES.includes('SPEED_CAMERA_FIX'));

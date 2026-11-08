@@ -19,12 +19,13 @@ private val route = NavRoute(
     cautionPoints = listOf(NavCaution(600.0, "cp-1", "SPEED_BUMP"), NavCaution(1500.0, "cp-2", "SCHOOL_ZONE")),
 )
 
-class FakeNaviHelperTest {
-    private val navi = FakeNaviHelper(route)
+/** The navigation with the car `progressM` along the route. */
+private fun at(progressM: Double) = FakeNaviHelper(Guidance(route).apply { reset(progressM) })
 
+class FakeNaviHelperTest {
     @Test
     fun listsTheNextManeuversWithTheirRemainingDistance() {
-        val tbt = navi.tbtInfo(400.0)
+        val tbt = at(400.0).tbtInfo()
 
         assertEquals(listOf(TurnType.TURN_LEFT, TurnType.TURN_RIGHT), tbt.map { it.type })
         assertEquals(listOf(100.0, 500.0), tbt.map { it.distance })
@@ -33,21 +34,21 @@ class FakeNaviHelperTest {
 
     @Test
     fun alertsCamerasInRangeAndComparesSpeedWithTheLimit() {
-        assertEquals(emptyList<Any>(), navi.cameraAlerts(100.0, 60.0))
+        assertEquals(emptyList<Any>(), at(100.0).cameraAlerts(60.0))
 
-        val alert = navi.cameraAlerts(300.0, 60.0).single()
+        val alert = at(300.0).cameraAlerts(60.0).single()
 
         assertEquals("cam-1", alert.id)
         assertEquals(CameraType.SPEED_CAMERA_FIX, alert.type)
         assertEquals(50, alert.speedLimit)
         assertEquals(500, alert.remainDistance)
         assertTrue(alert.isOverSpeed)
-        assertFalse(navi.cameraAlerts(300.0, 50.0).single().isOverSpeed)
+        assertFalse(at(300.0).cameraAlerts(50.0).single().isOverSpeed)
     }
 
     @Test
     fun reportsCautionPointsInRangeOnly() {
-        val points = navi.cautionPoints(400.0)
+        val points = at(400.0).cautionPoints()
 
         assertEquals(listOf("cp-1"), points.map { it.id })
         assertEquals(CautionPointType.SPEED_BUMP, points.single().type)
@@ -56,15 +57,15 @@ class FakeNaviHelperTest {
 
     @Test
     fun dropsPointsBehindTheCar() {
-        assertEquals(emptyList<Any>(), navi.cameraAlerts(850.0, 40.0))
-        assertEquals(listOf("cp-2"), navi.cautionPoints(1300.0).map { it.id })
+        assertEquals(emptyList<Any>(), at(850.0).cameraAlerts(40.0))
+        assertEquals(listOf("cp-2"), at(1300.0).cautionPoints().map { it.id })
     }
 
     @Test
     fun deliversThroughTheSdkListener() {
         val feed = NaviFeed()
 
-        navi.emit(300.0, 60.0, feed)
+        at(300.0).emit(60.0, feed)
 
         assertEquals(2, feed.snapshot.tbt.size)
         assertEquals(1, feed.snapshot.cameras.size)

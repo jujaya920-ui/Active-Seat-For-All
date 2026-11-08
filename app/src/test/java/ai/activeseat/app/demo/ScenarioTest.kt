@@ -2,6 +2,7 @@ package ai.activeseat.app.demo
 
 import org.json.JSONException
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertNull
 import org.junit.Test
 
 private fun row(t: Double, speed: Int, steering: Int, brake: Int, turn: String) =
@@ -17,7 +18,29 @@ fun scenarioJson(rows: List<String>) = """{
     "timeline": [${rows.joinToString(",")}]
 }"""
 
+private const val PLANNED_ROUTE = """"plannedRoute": {
+    "routePx": [[120, 800], [300, 600]], "routeLengthM": 2000,
+    "turns": [{ "atM": 400, "type": "TURN_LEFT", "description": "left" }], "leaveAtM": 400
+},"""
+
+/** The test scenario with a planned route the driver leaves at 400 m. */
+fun plannedScenarioJson(rows: List<String>) = scenarioJson(rows).replace(""""timeline":""", PLANNED_ROUTE + """"timeline":""")
+
 class ScenarioTest {
+    @Test
+    fun parsesThePlannedRoute() {
+        val planned = parseScenario(plannedScenarioJson(listOf(row(0.0, 0, 0, 0, "Off")))).plannedRoute!!
+
+        assertEquals(listOf(120 to 800, 300 to 600), planned.routePx)
+        assertEquals(2000.0, planned.routeLengthM, 0.0)
+        assertEquals(listOf(RouteMark(400.0, "TURN_LEFT", "left")), planned.turns)
+        assertEquals(400.0, planned.leaveAtM, 0.0)
+    }
+
+    @Test
+    fun hasNoPlannedRouteWhenAbsent() {
+        assertNull(parseScenario(scenarioJson(listOf(row(0.0, 0, 0, 0, "Off")))).plannedRoute)
+    }
     @Test
     fun parsesCamerasAndCautionPoints() {
         val scenario = parseScenario(scenarioJson(listOf(row(0.0, 0, 0, 0, "Off"))))

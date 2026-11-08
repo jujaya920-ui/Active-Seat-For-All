@@ -4,6 +4,11 @@
 // Every route goes through the same code and the same constants below. Nothing here may be
 // keyed by scenario id except ROUTES (which file, which title) and the PRNG seed. Never add a
 // per-route parameter, and never tune a constant by looking at prediction results.
+//
+// An entry with `drivenFile` is an off-route scenario: `file` is the route the navigation guides
+// and `drivenFile` the route the car actually drives. Everything is built from the driven route
+// as for any scenario, in the map frame of the guided route, and `plannedRoute` carries the
+// guided route with the distance where the two part.
 import { mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -17,7 +22,12 @@ export const REPO_ROOT = resolve(HERE, '..', '..');
 export const ROUTES = [
   { id: 'gangnam-pangyo', title: '판교', file: 'osrm_gangnam_pangyo.json' },
   { id: 'pangyo-dongpangyo', title: '판교 동판교로', file: 'osrm_pangyo_dongpangyo.json' },
-  { id: 'seohyeon-yanghyeon', title: '서현 양현로', file: 'osrm_seohyeon_yanghyeon.json' },
+  {
+    id: 'seohyeon-yanghyeon',
+    title: '서현 양현로',
+    file: 'osrm_seohyeon_yanghyeon.json',
+    drivenFile: 'osrm_seohyeon_yanghyeon_driven.json',
+  },
   { id: 'gangnam-teheran', title: '강남 테헤란로', file: 'osrm_gangnam_teheran.json' },
   { id: 'seocho-jungang', title: '서초 서초중앙로', file: 'osrm_seocho_jungang.json' },
   { id: 'seoulstation-cheongpa', title: '서울역 청파로', file: 'osrm_seoulstation_cheongpa.json' },
@@ -154,6 +164,11 @@ export const CAUTION = {
 };
 
 export const ROUTE_PX = { tolerancePx: 0.1 };
+
+// Where a driven route leaves the guided one: both are walked at the same distance from the
+// origin, the first spot further apart than splitM is a parting, and the parting point is the
+// last spot before it where they still touch.
+export const PARTING = { stepM: 0.1, splitM: 3, touchM: 0.5 };
 const FINE_DT_S = 0.02;
 const EARTH_M = 6371008.8;
 const RAD = Math.PI / 180;
@@ -801,12 +816,13 @@ function simplifiedIndices(points, keep, toleranceM) {
 // Kept vertices include every maneuver, so a turn lands on a corner of the drawn line. Cutting a
 // curve shortens the line unevenly, which moves distance fractions, so the tolerance is well
 // under a pixel and only grows if the point limit forces it.
-export function buildRoutePx(route) {
+// `frame` is the map projection, by default the route's own.
+export function buildRoutePx(route, frame = fitRoute(route.coordinates)) {
   const { coordinates, steps, lengthM } = route;
   const midLat = coordinates[0][1] * RAD;
   const metres = coordinates.map(([lon, lat]) => [lon * RAD * Math.cos(midLat) * EARTH_M, lat * RAD * EARTH_M]);
   const keep = steps.filter(isAnnounced).map((step) => step.vertex);
-  const { toPx } = fitRoute(coordinates);
+  const { toPx } = frame;
 
   const metresPerPx = lengthM / polylineLength(coordinates.map(toPx));
   let low = ROUTE_PX.tolerancePx * metresPerPx;
@@ -823,6 +839,33 @@ export function buildRoutePx(route) {
   }
   const pixels = indices.map((i) => toPx(coordinates[i]));
   return pixels.filter((p, i) => i === 0 || p[0] !== pixels[i - 1][0] || p[1] !== pixels[i - 1][1]);
+}
+
+// Position on a parsed route at a distance from its origin, in local metres around midLat.
+function pointAt(route, s, midLat) {
+  const { coordinates, atVertex } = route;
+  let i = 0;
+  while (i + 2 < atVertex.length && atVertex[i + 1] < s) i++;
+  const span = atVertex[i + 1] - atVertex[i];
+  const f = span > 0 ? clamp((s - atVertex[i]) / span, 0, 1) : 0;
+  const [lon, lat] = coordinates[i].map((value, k) => value + (coordinates[i + 1][k] - value) * f);
+  return [lon * RAD * Math.cos(midLat) * EARTH_M, lat * RAD * EARTH_M];
+}
+
+// Length of the stretch two routes share from the origin, in metres. Null if they never part.
+export function leaveAtM(driven, planned, parting = PARTING) {
+  const midLat = planned.coordinates[0][1] * RAD;
+  const gapAt = (s) => {
+    const [ax, ay] = pointAt(driven, s, midLat);
+    const [bx, by] = pointAt(planned, s, midLat);
+    return Math.hypot(ax - bx, ay - by);
+  };
+  const endM = Math.min(driven.lengthM, planned.lengthM);
+  let s = 0;
+  while (s <= endM && gapAt(s) <= parting.splitM) s += parting.stepM;
+  if (s > endM) return null;
+  while (s > 0 && gapAt(s) > parting.touchM) s -= parting.stepM;
+  return round(s, 1);
 }
 
 function accelerationRuns(timeline) {
@@ -876,9 +919,13 @@ export function chooseDemoWindow(timeline) {
   return { fromSec: timeline[best.from].t, toSec: timeline[best.from + span].t };
 }
 
-export function buildScenario({ id, title }, osrm) {
+// osrm is the route the car drives. plannedOsrm, for an off-route scenario, is the route the
+// navigation guides; it sets the map frame so both lines land on its map.
+export function buildScenario({ id, title }, osrm, plannedOsrm = null) {
   const route = parseRoute(osrm);
-  const { width, height } = fitRoute(route.coordinates);
+  const planned = plannedOsrm ? parseRoute(plannedOsrm) : null;
+  const frame = fitRoute((planned ?? route).coordinates);
+  const { width, height } = frame;
   const { gridM } = DRIVER;
   const cells = Math.round(route.lengthM / gridM);
   const short = route.lengthM <= SHORT.maxLengthM;
@@ -939,7 +986,15 @@ export function buildScenario({ id, title }, osrm) {
     // The app gives hints only with a passenger aboard, read from the car as in real use.
     occupiedSeats: ['driver', 'passenger'],
     demoWindow: chooseDemoWindow(timeline),
-    routePx: buildRoutePx(route),
+    ...(planned && {
+      plannedRoute: {
+        routePx: buildRoutePx(planned, frame),
+        routeLengthM: Math.round(planned.lengthM),
+        turns: buildTurns(planned.steps, title),
+        leaveAtM: leaveAtM(route, planned),
+      },
+    }),
+    routePx: buildRoutePx(route, frame),
     routeLengthM: Math.round(route.lengthM),
     turns: buildTurns(route.steps, title),
     frontEvents: buildFrontEvents(slowdowns, route.steps),
@@ -949,11 +1004,16 @@ export function buildScenario({ id, title }, osrm) {
   };
 }
 
+// The guided route, which also sets the map. drivenPath is the route the car drives.
 export const routePath = (entry) => resolve(HERE, 'routes', entry.file);
+export const drivenPath = (entry) => resolve(HERE, 'routes', entry.drivenFile ?? entry.file);
 export const outputPath = (id) => resolve(REPO_ROOT, 'app/src/main/assets/scenarios', `${id}.json`);
 
+const readJson = (path) => JSON.parse(readFileSync(path, 'utf8'));
+
 export function generate(entry) {
-  return buildScenario(entry, JSON.parse(readFileSync(routePath(entry), 'utf8')));
+  if (!entry.drivenFile) return buildScenario(entry, readJson(routePath(entry)));
+  return buildScenario(entry, readJson(drivenPath(entry)), readJson(routePath(entry)));
 }
 
 // Standard JSON with one line per array element and no indent: real-time timelines hold up to

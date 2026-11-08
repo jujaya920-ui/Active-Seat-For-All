@@ -50,7 +50,7 @@ class RouteNavigator(private val route: NavRoute) : NavContext {
 
     @Synchronized
     fun state(): NavState {
-        val fraction = if (route.lengthM > 0) (progressM / route.lengthM).coerceIn(0.0, 1.0) else 1.0
+        val fraction = route.fractionAt(progressM)
         val point = route.pointAt(fraction)
         val turn = upcomingTurn()
         val event = upcomingFrontEvent()
@@ -67,6 +67,8 @@ class RouteNavigator(private val route: NavRoute) : NavContext {
             frontEvent = event,
             frontEventDistanceM = event?.distanceM(),
             arrived = remainingM <= ARRIVAL_TOLERANCE_M,
+            shownRoute = route,
+            shownFraction = fraction,
         )
     }
 
@@ -76,11 +78,9 @@ class RouteNavigator(private val route: NavRoute) : NavContext {
     @Synchronized
     override fun frontEvent(): NavItem? = upcomingFrontEvent()?.toNavItem()
 
-    private fun upcomingTurn() = route.turns.firstOrNull { it.atM > progressM }
+    private fun upcomingTurn() = route.upcomingTurn(progressM)
 
-    private fun upcomingFrontEvent() = route.frontEvents.firstOrNull {
-        it.atM > progressM && it.atM - progressM <= FRONT_EVENT_RANGE_M
-    }
+    private fun upcomingFrontEvent() = route.upcomingFrontEvent(progressM)
 
     private fun NavMark.distanceM() = (atM - progressM).roundToInt()
 

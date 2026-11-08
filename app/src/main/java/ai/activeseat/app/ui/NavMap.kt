@@ -2,6 +2,7 @@ package ai.activeseat.app.ui
 
 import ai.activeseat.app.nav.NavMark
 import ai.activeseat.app.nav.NavRoute
+import ai.activeseat.app.nav.RoutePoint
 import androidx.compose.foundation.Canvas
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
@@ -103,7 +104,8 @@ private fun rememberTiles(map: RouteMap?, camera: MapCamera): Map<MapTile, Image
 
 /**
  * The map, the route and the car. Everything is drawn in map pixels through one transform, so
- * following the car and fitting the whole route differ only in the camera.
+ * following the car and fitting the whole route differ only in the camera. `route` is the route
+ * guided, passed up to `passedFraction`; the car is where it really is, which can be off it.
  */
 @Composable
 fun NavMap(
@@ -111,7 +113,8 @@ fun NavMap(
     route: NavRoute?,
     showRoute: Boolean,
     camera: MapCamera,
-    carFraction: Float,
+    passedFraction: Float,
+    car: RoutePoint?,
     carHeadingDeg: Float,
     modifier: Modifier,
 ) {
@@ -125,14 +128,14 @@ fun NavMap(
             translate(-camera.x, -camera.y)
         }) {
             if (map != null) drawMapImages(map, tiles)
-            if (route != null && showRoute) drawRoute(route, carFraction, camera.scale)
+            if (route != null && showRoute) drawRoute(route, passedFraction, camera.scale)
         }
         if (route != null && showRoute) {
             val end = route.pointAt(1.0)
             drawDestinationPin(camera.toScreen(end.x, end.y, size.width, size.height))
         }
-        route?.pointAt(carFraction.toDouble())?.let { car ->
-            drawCar(camera.toScreen(car.x, car.y, size.width, size.height), carHeadingDeg - camera.bearingDeg)
+        car?.let {
+            drawCar(camera.toScreen(it.x, it.y, size.width, size.height), carHeadingDeg - camera.bearingDeg)
         }
     }
 }
@@ -152,9 +155,9 @@ private fun DrawScope.drawMapImages(map: RouteMap, tiles: Map<MapTile, ImageBitm
     }
 }
 
-private fun DrawScope.drawRoute(route: NavRoute, carFraction: Float, scale: Float) {
+private fun DrawScope.drawRoute(route: NavRoute, passedFraction: Float, scale: Float) {
     val vertices = route.routePx.map { (x, y) -> Offset(x.toFloat(), y.toFloat()) }
-    val car = route.pointAt(carFraction.toDouble())
+    val car = route.pointAt(passedFraction.toDouble())
     val all = polyline(vertices)
     drawPath(all, RouteCasing, style = lineOf(14.dp.toPx() / scale))
     drawPath(all, RouteAhead, style = lineOf(10.dp.toPx() / scale))

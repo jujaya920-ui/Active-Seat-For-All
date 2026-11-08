@@ -3,9 +3,15 @@ package ai.activeseat.app.motion
 import ai.activeseat.app.demo.Scenario
 import ai.activeseat.app.demo.parseScenario
 import ai.activeseat.app.demo.toNavRoute
+import ai.activeseat.app.demo.toPlannedRoute
 import ai.activeseat.app.nav.FakeNaviHelper
-import ai.activeseat.app.nav.RouteNavigator
+import ai.activeseat.app.nav.Guidance
+import ai.activeseat.app.nav.GuidancePhase
 import ai.activeseat.app.vehicle.TurnSignal
+import ai.pleos.playground.navi.data.CameraAlert
+import ai.pleos.playground.navi.data.CautionPoint
+import ai.pleos.playground.navi.data.TBTInfo
+import ai.pleos.playground.navi.helper.listener.NaviHelperEventListener
 import ai.activeseat.app.vehicle.VehicleSignal
 import java.io.File
 import kotlin.math.abs
@@ -32,16 +38,26 @@ fun loadScenarios(): List<Scenario> = SCENARIO_DIR.listFiles { f -> f.extension 
     .sortedBy { it.name }
     .map { parseScenario(it.readText()) }
 
-data class Tick(val ms: Long, val truthLateral: Double, val truthLongitudinal: Double, val out: MotionOutput)
+data class Tick(
+    val ms: Long,
+    val truthLateral: Double,
+    val truthLongitudinal: Double,
+    val out: MotionOutput,
+    val phase: GuidancePhase = GuidancePhase.GUIDING,
+    val progressM: Double = 0.0,
+)
 
 /**
  * Plays a scenario as the app would see it on the emulator: the console takes whole km/h and
- * degrees, the sampler ticks every 0.2 s, and the fake navigation reports once a second.
+ * degrees, the sampler ticks every 0.2 s, and the fake navigation reports once a second through
+ * the same guidance session as the app, reroute included. Without `navigation` the engine hears
+ * no reports at all.
  */
-fun replay(scenario: Scenario, config: MotionConfig): List<Tick> {
-    val navigator = RouteNavigator(scenario.toNavRoute())
-    val navi = FakeNaviHelper(scenario.toNavRoute())
+fun replay(scenario: Scenario, config: MotionConfig, navigation: Boolean = true): List<Tick> {
+    val guidance = Guidance(scenario.toNavRoute(), scenario.toPlannedRoute())
+    val navi = FakeNaviHelper(guidance)
     val feed = NaviFeed()
+    val listener = JvmListener(feed)
     val engine = MotionEngine(config)
     val ticks = mutableListOf<Tick>()
     val endMs = (scenario.durationSec * 1000).toLong()
@@ -50,8 +66,8 @@ fun replay(scenario: Scenario, config: MotionConfig): List<Tick> {
         val t = ms / 1000.0
         val frame = scenario.frameAt(t)
         val speedKph = frame.speedKph.roundToInt().toDouble()
-        navigator.onSpeed(speedKph, ms)
-        if (ms % FakeNaviHelper.EMIT_INTERVAL_MS == 0L) navi.emit(navigator.state().progressM, speedKph, feed)
+        guidance.onSpeed(speedKph, ms)
+        if (navigation && ms % FakeNaviHelper.EMIT_INTERVAL_MS == 0L) navi.emit(speedKph, listener)
         val signal = VehicleSignal(
             speedKph = speedKph,
             steeringDeg = frame.steeringDeg.roundToInt().toDouble(),
@@ -63,10 +79,21 @@ fun replay(scenario: Scenario, config: MotionConfig): List<Tick> {
             },
         )
         val out = engine.step(signal, ms, feed.snapshot)
-        ticks += Tick(ms, truthLateral(scenario, t), truthLongitudinal(scenario, t), out)
+        ticks += Tick(ms, truthLateral(scenario, t), truthLongitudinal(scenario, t), out, guidance.phase, guidance.state().progressM)
         ms += STEP_MS
     }
     return ticks
+}
+
+/** Passes the reports to the feed. The SDK's default onReRouteEnded logs through android.util.Log, absent on the JVM. */
+private class JvmListener(private val feed: NaviFeed) : NaviHelperEventListener {
+    override fun onReRouteEnded() = Unit
+
+    override fun onTBTInfo(p0: List<TBTInfo>) = feed.onTBTInfo(p0)
+
+    override fun onCameraAlert(p0: List<CameraAlert>) = feed.onCameraAlert(p0)
+
+    override fun onCautionPointInfo(p0: List<CautionPoint>) = feed.onCautionPointInfo(p0)
 }
 
 private fun truthLateral(scenario: Scenario, t: Double): Double {

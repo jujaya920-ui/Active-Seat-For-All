@@ -7,6 +7,7 @@ import ai.activeseat.app.demo.Scenario
 import ai.activeseat.app.demo.ScenarioPlayer
 import ai.activeseat.app.demo.ScenarioRepository
 import ai.activeseat.app.demo.toNavRoute
+import ai.activeseat.app.demo.toPlannedRoute
 import ai.activeseat.app.hardware.HardwareCommand
 import ai.activeseat.app.hardware.HardwareSettings
 import ai.activeseat.app.hardware.LEVEL_MAX
@@ -24,9 +25,9 @@ import ai.activeseat.app.motion.NaviFeed
 import ai.activeseat.app.motion.PreviewManeuver
 import ai.activeseat.app.motion.previewHint
 import ai.activeseat.app.nav.FakeNaviHelper
+import ai.activeseat.app.nav.Guidance
 import ai.activeseat.app.nav.NavRoute
 import ai.activeseat.app.nav.NavState
-import ai.activeseat.app.nav.RouteNavigator
 import ai.activeseat.app.vehicle.CarSignalSource
 import ai.activeseat.app.vehicle.DRIVER_SEAT
 import ai.activeseat.app.vehicle.Gear
@@ -136,8 +137,9 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
     @Volatile
     private var testHint: Hint? = null
 
+    // The car's position on the selected route and what the navigation guides there.
     @Volatile
-    private var navigator: RouteNavigator? = null
+    private var guidance: Guidance? = null
 
     // Stands in for the built-in navigation on the selected route. The engine hears it only
     // through the NaviHelper listener, as it would the real one.
@@ -161,14 +163,14 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
         viewModelScope.launch(Dispatchers.Default) {
             sampler.run { signal ->
                 val now = clock()
-                navigator?.onSpeed(signal.speedKph, now)
+                guidance?.onSpeed(signal.speedKph, now)
                 emitNavi(signal.speedKph, now)
                 val nav = naviFeed.snapshot
                 val drive = signal.gear.runsMotion()
                 val seatOutput = seatEngine?.step(signal, now, nav, drive)
                 val watchOutput = watchEngine?.step(signal, now, nav, drive)
                 _ui.update {
-                    it.copy(signal = signal, nav = navigator?.state(), motionStatus = describe(seatOutput ?: watchOutput, signal))
+                    it.copy(signal = signal, nav = guidance?.state(), motionStatus = describe(seatOutput ?: watchOutput, signal))
                 }
                 // Occupancy only routes the output: with no passenger every module and the watch rest.
                 val passenger = signal.seats.hasPassenger()
@@ -176,7 +178,7 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
                 lastWatchHint = watchOutput?.hint?.takeIf { passenger } ?: Hint()
                 publish()
                 if (BuildConfig.DEBUG) {
-                    Log.d(TAG, "SAMPLE $signal nav=${navigator?.state()?.progressM} seat=$seatOutput watch=$watchOutput")
+                    Log.d(TAG, "SAMPLE $signal nav=${guidance?.state()?.progressM} phase=${guidance?.phase} seat=$seatOutput watch=$watchOutput")
                 }
             }
         }
@@ -212,7 +214,7 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
         val id = _ui.value.selectedScenario ?: return
         val scenario = loaded[id] ?: return
         val window = scenario.demoWindow.takeUnless { fullRoute }
-        navigator?.reset(window?.let { scenario.distanceAtM(it.fromSec) } ?: 0.0)
+        guidance?.reset(window?.let { scenario.distanceAtM(it.fromSec) } ?: 0.0)
         _ui.update { it.copy(playerError = null, screen = NavScreen.GUIDING) }
         playJob = viewModelScope.launch(Dispatchers.Default) {
             if (window == null) player.play(scenario) else player.play(scenario, window.fromSec, window.toSec)
@@ -285,9 +287,9 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
     private fun place(id: String) {
         val scenario = loaded[id] ?: return
         val route = scenario.toNavRoute()
-        val next = RouteNavigator(route)
-        navigator = next
-        fakeNavi = FakeNaviHelper(route)
+        val next = Guidance(route, scenario.toPlannedRoute())
+        guidance = next
+        fakeNavi = FakeNaviHelper(next)
         naviFeed.clear()
         lastNaviEmitMs = null
         _ui.update {
@@ -318,10 +320,9 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
     /** NaviHelper-style reports once a second while a route is selected. */
     private fun emitNavi(speedKph: Double, nowMs: Long) {
         val navi = fakeNavi ?: return
-        val nav = navigator ?: return
         if (lastNaviEmitMs?.let { nowMs - it < FakeNaviHelper.EMIT_INTERVAL_MS } == true) return
         lastNaviEmitMs = nowMs
-        navi.emit(nav.state().progressM, speedKph, naviFeed)
+        navi.emit(speedKph, naviFeed)
     }
 
     /**

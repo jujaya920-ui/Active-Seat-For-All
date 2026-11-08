@@ -28,7 +28,10 @@ const POINT_LISTS = {
   cameras: { keys: ['atM', 'id', 'type', 'speedLimit', 'sectionAvrSpeed'], types: CAMERA_TYPES },
   cautionPoints: { keys: ['atM', 'id', 'type'], types: CAUTION_POINT_TYPES },
 };
-const OPTIONAL_TOP_KEYS = ['demoWindow'];
+const OPTIONAL_TOP_KEYS = ['demoWindow', 'plannedRoute'];
+const PLANNED_KEYS = ['routePx', 'routeLengthM', 'turns', 'leaveAtM'];
+// The car leaves the guided route where it should have turned, without signalling for that turn.
+const PLANNED = { leaveNearTurnM: 15, noSignalBeforeM: 150 };
 const ROW_KEYS = ['t', 'speedKph', 'steeringDeg', 'brakePct', 'acceleratorPct', 'turnSignal'];
 const TURN_SIGNALS = ['Off', 'BlinkLeft', 'BlinkRight'];
 const FIRM_TURNS = { TURN_LEFT: 1, TURN_SHARP_L: 1, TURN_RIGHT: -1, TURN_SHARP_R: -1 };
@@ -44,6 +47,58 @@ const SIGNALLED = {
 const isNumber = (value) => typeof value === 'number' && Number.isFinite(value);
 const sameKeys = (object, keys) =>
   Object.keys(object).length === keys.length && keys.every((key) => key in object);
+
+function checkRoutePx(name, points, mapWidth, mapHeight, errors) {
+  if (!Array.isArray(points) || points.length < 2) errors.push(`${name} needs at least 2 points`);
+  else if (!points.every((p) => Array.isArray(p) && p.length === 2 && p.every(isNumber))) {
+    errors.push(`${name} points must be [x, y] numbers`);
+  } else if (points.some(([x, y]) => x < 0 || x > mapWidth || y < 0 || y > mapHeight)) {
+    errors.push(`${name} must stay inside ${mapWidth}x${mapHeight}`);
+  }
+  if (Array.isArray(points) && points.length > LIMITS.maxRoutePxPoints) {
+    errors.push(`${name} has ${points.length} points, limit ${LIMITS.maxRoutePxPoints}`);
+  }
+}
+
+function checkEvents(name, list, lengthM, errors) {
+  if (!Array.isArray(list)) {
+    errors.push(`${name} must be an array`);
+    return;
+  }
+  list.forEach((item, i) => {
+    if (item === null || typeof item !== 'object' || !sameKeys(item, ['atM', 'type', 'description'])) {
+      errors.push(`${name}[${i}] keys must be atM, type, description`);
+      return;
+    }
+    if (!isNumber(item.atM) || item.atM < 0 || item.atM > lengthM) errors.push(`${name}[${i}].atM is off the route`);
+    if (typeof item.type !== 'string' || item.type === '') errors.push(`${name}[${i}].type is missing`);
+    if (typeof item.description !== 'string' || item.description === '') errors.push(`${name}[${i}].description is missing`);
+    if (i > 0 && item.atM <= list[i - 1].atM) errors.push(`${name} must be in increasing atM order`);
+  });
+}
+
+// The guided route of an off-route scenario: same map, same turn rules as the driven route.
+// Returns whether the shape is sound enough for checkPlannedRoute.
+function checkPlannedFormat(s, errors) {
+  const planned = s.plannedRoute;
+  if (planned === null || typeof planned !== 'object' || !sameKeys(planned, PLANNED_KEYS)) {
+    errors.push(`plannedRoute keys must be exactly: ${PLANNED_KEYS.join(', ')}`);
+    return false;
+  }
+  const [mapWidth, mapHeight] = Array.isArray(s.mapSize) ? s.mapSize : [];
+  const before = errors.length;
+  if (!isNumber(planned.routeLengthM) || planned.routeLengthM <= 0) errors.push('plannedRoute.routeLengthM must be positive');
+  checkRoutePx('plannedRoute.routePx', planned.routePx, mapWidth, mapHeight, errors);
+  checkEvents('plannedRoute.turns', planned.turns, planned.routeLengthM, errors);
+  (Array.isArray(planned.turns) ? planned.turns : []).forEach((turn, i) => {
+    if (!TURN_TYPES.includes(turn?.type)) errors.push(`plannedRoute.turns[${i}].type ${turn?.type} is not a NaviHelper TurnType`);
+  });
+  const { leaveAtM } = planned;
+  if (!isNumber(leaveAtM) || leaveAtM <= 0 || leaveAtM >= planned.routeLengthM || leaveAtM >= s.routeLengthM) {
+    errors.push('plannedRoute.leaveAtM must lie inside both routes');
+  }
+  return errors.length === before;
+}
 
 function checkFormat(s, errors) {
   const required = Object.fromEntries(Object.entries(s).filter(([key]) => !OPTIONAL_TOP_KEYS.includes(key)));
@@ -62,32 +117,13 @@ function checkFormat(s, errors) {
   if (!isNumber(mapWidth) || !isNumber(mapHeight)) errors.push('mapSize must be [width, height]');
   if (!isNumber(s.routeLengthM) || s.routeLengthM <= 0) errors.push('routeLengthM must be positive');
 
-  if (!Array.isArray(s.routePx) || s.routePx.length < 2) errors.push('routePx needs at least 2 points');
-  else if (!s.routePx.every((p) => Array.isArray(p) && p.length === 2 && p.every(isNumber))) {
-    errors.push('routePx points must be [x, y] numbers');
-  } else if (s.routePx.some(([x, y]) => x < 0 || x > mapWidth || y < 0 || y > mapHeight)) {
-    errors.push(`routePx must stay inside ${mapWidth}x${mapHeight}`);
-  }
-  if (Array.isArray(s.routePx) && s.routePx.length > LIMITS.maxRoutePxPoints) {
-    errors.push(`routePx has ${s.routePx.length} points, limit ${LIMITS.maxRoutePxPoints}`);
-  }
-
-  for (const [name, list] of [['turns', s.turns], ['frontEvents', s.frontEvents]]) {
-    if (!Array.isArray(list)) {
-      errors.push(`${name} must be an array`);
-      continue;
-    }
-    list.forEach((item, i) => {
-      if (!sameKeys(item, ['atM', 'type', 'description'])) errors.push(`${name}[${i}] keys must be atM, type, description`);
-      if (!isNumber(item.atM) || item.atM < 0 || item.atM > s.routeLengthM) errors.push(`${name}[${i}].atM is off the route`);
-      if (typeof item.type !== 'string' || item.type === '') errors.push(`${name}[${i}].type is missing`);
-      if (typeof item.description !== 'string' || item.description === '') errors.push(`${name}[${i}].description is missing`);
-      if (i > 0 && item.atM <= list[i - 1].atM) errors.push(`${name} must be in increasing atM order`);
-    });
-  }
+  checkRoutePx('routePx', s.routePx, mapWidth, mapHeight, errors);
+  checkEvents('turns', s.turns, s.routeLengthM, errors);
+  checkEvents('frontEvents', s.frontEvents, s.routeLengthM, errors);
   (Array.isArray(s.turns) ? s.turns : []).forEach((turn, i) => {
     if (!TURN_TYPES.includes(turn.type)) errors.push(`turns[${i}].type ${turn.type} is not a NaviHelper TurnType`);
   });
+
   (Array.isArray(s.frontEvents) ? s.frontEvents : []).forEach((event, i) => {
     if (!FRONT_EVENT_TYPES.includes(event.type)) errors.push(`frontEvents[${i}].type ${event.type} is not allowed`);
   });
@@ -179,19 +215,24 @@ function checkRoute(s, travelled, errors) {
   if (gap > LIMITS.routeLengthTolerance) {
     errors.push(`integrated ${totalM.toFixed(1)} m differs from routeLengthM ${s.routeLengthM} by ${(gap * 100).toFixed(2)}%`);
   }
-  // Each turn must sit on a polyline vertex at about the same fraction of the route.
-  const pxTotal = polylineLength(s.routePx);
+  checkPolyline('', s.routePx, s.turns, totalM, errors);
+}
+
+// Each turn must sit on a polyline vertex at about the same fraction of the route.
+function checkPolyline(prefix, routePx, turns, totalM, errors) {
+  const pxTotal = polylineLength(routePx);
   const fractions = [];
   let walked = 0;
-  s.routePx.forEach((point, i) => {
-    if (i > 0) walked += polylineLength([s.routePx[i - 1], point]);
+  routePx.forEach((point, i) => {
+    if (i > 0) walked += polylineLength([routePx[i - 1], point]);
     fractions.push(walked / pxTotal);
   });
-  s.turns.forEach((turn, i) => {
+  const label = prefix ? `${prefix} turn` : 'turn';
+  turns.forEach((turn, i) => {
     const wanted = turn.atM / totalM;
     const nearest = Math.min(...fractions.map((fraction) => Math.abs(fraction - wanted)));
     if (nearest > LIMITS.polylineTolerance) {
-      errors.push(`turn ${i}: no polyline vertex within ${LIMITS.polylineTolerance * 100}% of atM at ${(wanted * 100).toFixed(1)}%`);
+      errors.push(`${label} ${i}: no polyline vertex within ${LIMITS.polylineTolerance * 100}% of atM at ${(wanted * 100).toFixed(1)}%`);
     }
   });
 }
@@ -241,6 +282,25 @@ function checkHardBrakes(s, hardBrakes, travelled, errors) {
   }
 }
 
+// The car leaves the guided route where it should have turned, and never signals for that turn.
+function checkPlannedRoute(s, travelled, errors) {
+  const { turns, leaveAtM } = s.plannedRoute;
+  checkPolyline('plannedRoute', s.plannedRoute.routePx, turns, s.plannedRoute.routeLengthM, errors);
+  const missed = turns.find((turn) => turn.type !== 'TURN_ARRIVE');
+  if (!missed) {
+    errors.push('plannedRoute has no turn for the car to miss');
+    return;
+  }
+  if (Math.abs(leaveAtM - missed.atM) > PLANNED.leaveNearTurnM) {
+    errors.push(`plannedRoute.leaveAtM ${leaveAtM} is not within ${PLANNED.leaveNearTurnM} m of the missed turn at ${missed.atM}`);
+  }
+  const mode = SIGNALLED[missed.type];
+  if (!mode) return;
+  const fromM = leaveAtM - PLANNED.noSignalBeforeM;
+  const i = s.timeline.findIndex((row, k) => travelled[k] >= fromM && travelled[k] <= leaveAtM && row.turnSignal === mode);
+  if (i >= 0) errors.push(`t=${s.timeline[i].t}: ${mode} toward the missed turn at ${missed.atM} m`);
+}
+
 function checkDemoWindow(s, errors) {
   if (s.demoWindow === undefined) return;
   const { fromSec, toSec } = s.demoWindow ?? {};
@@ -262,6 +322,7 @@ export function validateScenario(s, { assetsDir } = {}) {
   const errors = [];
   const warnings = [];
   const info = {};
+  const plannedOk = s.plannedRoute !== undefined && checkPlannedFormat(s, errors);
   if (!checkFormat(s, errors)) return { errors, warnings, info };
 
   const accel = checkPhysics(s, errors);
@@ -271,6 +332,7 @@ export function validateScenario(s, { assetsDir } = {}) {
   checkTurns(s, travelled, errors);
   checkHardBrakes(s, hardBrakes, travelled, errors);
   checkDemoWindow(s, errors);
+  if (plannedOk) checkPlannedRoute(s, travelled, errors);
 
   if (assetsDir && !existsSync(resolve(assetsDir, s.mapImage))) warnings.push(`map image not produced yet: ${s.mapImage}`);
 
@@ -291,6 +353,14 @@ export function validateScenario(s, { assetsDir } = {}) {
   info.cautionPoints = Array.isArray(s.cautionPoints) ? s.cautionPoints.length : 'none';
   info.routePxPoints = s.routePx.length;
   info.demoWindow = s.demoWindow ? `${s.demoWindow.fromSec} to ${s.demoWindow.toSec}` : 'none';
+  if (plannedOk) {
+    const passedAt = (metres) => tl[travelled.findIndex((m) => m >= metres)]?.t;
+    info.plannedRouteLengthM = s.plannedRoute.routeLengthM;
+    info.plannedTurns = s.plannedRoute.turns.map((turn) => `${turn.atM} ${turn.type}`).join(', ');
+    info.leaveAtM = s.plannedRoute.leaveAtM;
+    info.leaveAtT = passedAt(s.plannedRoute.leaveAtM);
+    info.turnTimes = s.turns.filter((turn) => turn.type !== 'TURN_ARRIVE').map((turn) => `${turn.atM} ${turn.type} t=${passedAt(turn.atM)}`).join(', ');
+  }
   info.hardAccels = hardAccels.length;
   info.hardBrakes = hardBrakes.map(({ startI, hardI, endI }) => ({
     start: tl[startI].t,

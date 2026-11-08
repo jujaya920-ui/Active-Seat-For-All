@@ -27,6 +27,26 @@ private fun motionRow(t: Int, speed: Int) =
 
 class ScenarioRouteTest {
     @Test
+    fun plannedRouteKeepsOnlyTheSharedStretchesPoints() {
+        // Driven marks: turn 500, front event 1500, camera 900, caution 1200; the driver leaves at 400.
+        val json = plannedScenarioJson(listOf(motionRow(0, 36), motionRow(10, 36)))
+            .replace(""""atM": 900, "id": "cam-1"""", """"atM": 300, "id": "cam-1"""")
+        val planned = parseScenario(json).toPlannedRoute()!!
+
+        assertEquals(400.0, planned.leaveAtM, 0.0)
+        assertEquals(2000.0, planned.route.lengthM, 0.0)
+        assertEquals(listOf(120 to 800, 300 to 600), planned.route.routePx)
+        assertEquals(listOf(NavMark(400.0, "TURN_LEFT", "left")), planned.route.turns)
+        assertEquals(listOf("cam-1"), planned.route.cameras.map { it.id })
+        assertTrue(planned.route.cautionPoints.isEmpty())
+        assertTrue(planned.route.frontEvents.isEmpty())
+    }
+
+    @Test
+    fun noPlannedRouteWithoutOne() {
+        assertNull(parseScenario(scenarioJson(listOf(motionRow(0, 36), motionRow(10, 36)))).toPlannedRoute())
+    }
+    @Test
     fun copiesRouteDataAndMarks() {
         val route = parseScenario(scenarioJson(listOf(motionRow(0, 36), motionRow(10, 36)))).toNavRoute()
 
