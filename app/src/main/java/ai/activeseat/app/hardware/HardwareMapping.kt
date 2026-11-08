@@ -3,20 +3,18 @@ package ai.activeseat.app.hardware
 import ai.activeseat.app.hint.Hint
 import ai.activeseat.app.hint.LateralCue
 import ai.activeseat.app.hint.LongitudinalCue
+import ai.activeseat.app.seat.YawContext
+import ai.activeseat.app.seat.yawDeg
 import kotlin.math.atan
 import kotlin.math.max
 import kotlin.math.min
 
-/** Lean geometry shared by the three seat modules. The limits and yaw ratio are provisional. */
+/** Lean geometry shared by the three seat modules. The limit is provisional. */
 object HardwareMapping {
     const val GRAVITY_MPS2 = 9.81
 
     /** Roll and pitch never go past this, whatever the acceleration. */
     const val MAX_LEAN_DEG = 15.0
-
-    /** The headrest turns this many times the roll, toward the inside of the corner. */
-    const val YAW_PER_ROLL = 2.0
-    const val MAX_YAW_DEG = MAX_LEAN_DEG * YAW_PER_ROLL
 
     /** The angle that cancels [mps2]: leaning by it sets gravity's sideways part against the inertia. */
     fun cancelDeg(mps2: Double): Double = min(Math.toDegrees(atan(mps2 / GRAVITY_MPS2)), MAX_LEAN_DEG)
@@ -28,7 +26,7 @@ object HardwareMapping {
  * direction of motion: the inner side in a corner. Front and rear only exist on the cushion, where
  * the seat has a front and a rear half.
  */
-fun Hint.toHardwareCommand(): HardwareCommand {
+fun Hint.toHardwareCommand(yaw: YawContext): HardwareCommand {
     val leftSign = when (lateral) {
         LateralCue.LEFT -> 1.0
         LateralCue.RIGHT -> -1.0
@@ -47,7 +45,7 @@ fun Hint.toHardwareCommand(): HardwareCommand {
         vibration = corner,
         rollDeg = rollDeg,
         pitchDeg = forwardSign * HardwareMapping.cancelDeg(longitudinalMps2),
-        yawDeg = HardwareMapping.YAW_PER_ROLL * rollDeg,
+        yawDeg = yawDeg(leftSign, lateralMps2, yaw),
     )
     return HardwareCommand(
         headrest = module,
@@ -63,8 +61,8 @@ fun Hint.toHardwareCommand(): HardwareCommand {
  * its angle and never the angle itself. A device turned off rests. Lean speed off keeps the seat
  * upright but leaves its vibration on.
  */
-fun toHardwareCommand(seat: Hint, watch: Hint, settings: HardwareSettings): HardwareCommand {
-    val base = (if (settings.seatOn) seat else Hint()).toHardwareCommand()
+fun toHardwareCommand(seat: Hint, watch: Hint, settings: HardwareSettings, yaw: YawContext): HardwareCommand {
+    val base = (if (settings.seatOn) seat else Hint()).toHardwareCommand(yaw)
     val seatScale = HardwareSettings.vibrationScale(settings.seatVibration)
     val leanSec = HardwareSettings.leanSeconds(settings.leanSpeed)
     fun ModuleCommand.shaped() = ModuleCommand(
