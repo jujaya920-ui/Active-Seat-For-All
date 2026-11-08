@@ -4,12 +4,18 @@ enum class LateralCue { NONE, LEFT, RIGHT }
 
 enum class LongitudinalCue { NONE, ACCELERATE, BRAKE }
 
-/** The stabilized decision shown to the passenger. Strengths are 0..1 and 0 when the cue is NONE. */
+/**
+ * The decision shown to the passenger. Each axis carries two independent values: the strength,
+ * 0..1 from the vibration bands, which sets how hard it vibrates, and the acceleration magnitude in
+ * m/s², which sets the lean angle. Both are 0 when the cue is NONE.
+ */
 data class Hint(
     val lateral: LateralCue = LateralCue.NONE,
     val lateralStrength: Double = 0.0,
     val longitudinal: LongitudinalCue = LongitudinalCue.NONE,
     val longitudinalStrength: Double = 0.0,
+    val lateralMps2: Double = 0.0,
+    val longitudinalMps2: Double = 0.0,
 )
 
 /** Cue strength toward each car maneuver, 0..1, shown as bars. All 0 when no cue is on. */

@@ -14,7 +14,6 @@ import kotlin.math.sign
 import kotlin.math.tan
 
 private const val KPH_TO_MPS = 1 / 3.6
-private const val MAX_LEVEL = 4
 
 enum class CueSource { NONE, PREDICTED, MEASURED }
 
@@ -55,6 +54,8 @@ class MotionEngine(private val config: MotionConfig = MotionConfig()) {
     private val turn = Prediction()
     private val slowdown = Prediction()
 
+    // Declared before the outputs, which start from it.
+    private val noCue = Cue(0, 0.0, CueSource.NONE)
     private val lateralOut = Held()
     private val longitudinalOut = Held()
 
@@ -97,15 +98,14 @@ class MotionEngine(private val config: MotionConfig = MotionConfig()) {
         updateSlowdown(nav, v, nowMs)
 
         val lateralCue = when {
-            measuredLateral != 0 -> Cue(measuredLateral, level(abs(lateral), config.lateralOnMps2), CueSource.MEASURED)
-            turn.on -> Cue(turn.direction, turn.level, CueSource.PREDICTED)
-            else -> Cue.NONE
+            measuredLateral != 0 -> Cue(measuredLateral, abs(lateral), CueSource.MEASURED)
+            turn.on -> Cue(turn.direction, turn.mps2, CueSource.PREDICTED)
+            else -> noCue
         }
         val longitudinalCue = when {
-            measuredLongitudinal > 0 -> Cue(1, level(longitudinal, config.accelOnMps2), CueSource.MEASURED)
-            measuredLongitudinal < 0 -> Cue(-1, level(-longitudinal, config.brakeOnMps2), CueSource.MEASURED)
-            slowdown.on -> Cue(-1, slowdown.level, CueSource.PREDICTED)
-            else -> Cue.NONE
+            measuredLongitudinal != 0 -> Cue(measuredLongitudinal, abs(longitudinal), CueSource.MEASURED)
+            slowdown.on -> Cue(-1, slowdown.mps2, CueSource.PREDICTED)
+            else -> noCue
         }
         val lat = lateralOut.update(lateralCue, nowMs)
         val lon = longitudinalOut.update(longitudinalCue, nowMs)
@@ -117,12 +117,14 @@ class MotionEngine(private val config: MotionConfig = MotionConfig()) {
                     else -> LateralCue.NONE
                 },
                 lateralStrength = lat.strength(),
+                lateralMps2 = lat.mps2,
                 longitudinal = when (lon.direction) {
                     1 -> LongitudinalCue.ACCELERATE
                     -1 -> LongitudinalCue.BRAKE
                     else -> LongitudinalCue.NONE
                 },
                 longitudinalStrength = lon.strength(),
+                longitudinalMps2 = lon.mps2,
             ),
             lateralSource = lat.source,
             longitudinalSource = lon.source,
@@ -159,9 +161,6 @@ class MotionEngine(private val config: MotionConfig = MotionConfig()) {
         }
     }
 
-    private fun level(magnitude: Double, onMps2: Double): Int =
-        if (magnitude < onMps2 * config.offRatio) 1 else 1 + config.levelBoundsMps2.count { magnitude >= it }
-
     private fun trackArrivals(nav: NavSnapshot) {
         if (nav.tbt !== tbtSeen) {
             tbtSeen = nav.tbt
@@ -195,7 +194,7 @@ class MotionEngine(private val config: MotionConfig = MotionConfig()) {
         val direction = next.type.side()
         if (direction == 0 || signal.side() != direction || v * 3.6 < config.minSpeedKph || remainingM <= 0) return
         if (measuredLateral == direction) return
-        if (remainingM / v <= config.leadSec + config.approachSec) turn.start(turnId, direction, next.type.predictedLevel(), nowMs)
+        if (remainingM / v <= config.leadSec + config.approachSec) turn.start(turnId, direction, expectedMps2(next.type), nowMs)
     }
 
     private fun updateSlowdown(nav: NavSnapshot, v: Double, nowMs: Long) {
@@ -221,11 +220,18 @@ class MotionEngine(private val config: MotionConfig = MotionConfig()) {
             .maxByOrNull { it.second } ?: return
         // While measured motion holds the axis a prediction would only be used up by it.
         if (decel >= config.requiredDecelMps2 && measuredLongitudinal == 0) {
-            slowdown.start(target.id, -1, level(decel, config.brakeOnMps2), nowMs)
+            slowdown.start(target.id, -1, decel, nowMs)
         }
     }
 
     private fun square(x: Double) = x * x
+
+    /** Provisional expected lateral acceleration before the turn shows: a planning choice, not measured. */
+    private fun expectedMps2(type: TurnType): Double = when (type) {
+        TurnType.TURN_SHARP_L, TurnType.TURN_SHARP_R, TurnType.TURN_UTURN -> config.sharpTurnMps2
+        TurnType.TURN_LEFT, TurnType.TURN_RIGHT -> config.turnMps2
+        else -> config.gentleTurnMps2
+    }
 
     private fun travelledSince(id: String) = odometerM - (pointOdometerM[id] ?: odometerM)
 
@@ -246,15 +252,15 @@ class MotionEngine(private val config: MotionConfig = MotionConfig()) {
         var key: String? = null
         var on = false
         var direction = 0
-        var level = 1
+        var mps2 = 0.0
         var passedAtMs: Long? = null
         val consumed = mutableSetOf<String>()
         private var onSinceMs = 0L
 
-        fun start(key: String, direction: Int, level: Int, nowMs: Long) {
+        fun start(key: String, direction: Int, mps2: Double, nowMs: Long) {
             this.key = key
             this.direction = direction
-            this.level = level
+            this.mps2 = mps2
             on = true
             onSinceMs = nowMs
             passedAtMs = null
@@ -292,17 +298,16 @@ class MotionEngine(private val config: MotionConfig = MotionConfig()) {
         }
     }
 
-    private data class Cue(val direction: Int, val level: Int, val source: CueSource) {
-        fun strength(): Double = if (direction == 0) 0.0 else level.coerceIn(1, MAX_LEVEL).toDouble() / MAX_LEVEL
-
-        companion object {
-            val NONE = Cue(0, 0, CueSource.NONE)
-        }
+    /** One axis's cue: its direction and the acceleration it stands for, which sets strength and angle. */
+    private inner class Cue(val direction: Int, val mps2: Double, val source: CueSource) {
+        fun strength(): Double =
+            if (direction == 0) 0.0 else config.level(mps2).toDouble() / MotionConfig.MAX_LEVEL
     }
+
 
     /** Turns on at once; turns off only after the minimum hold, unless measured motion replaces it. */
     private inner class Held {
-        private var cue = Cue.NONE
+        private var cue = noCue
         private var onSinceMs = 0L
 
         fun update(next: Cue, nowMs: Long): Cue {
@@ -311,13 +316,13 @@ class MotionEngine(private val config: MotionConfig = MotionConfig()) {
                     if (next.direction != cue.direction) onSinceMs = nowMs
                     cue = next
                 }
-                cue.direction != 0 && nowMs - onSinceMs >= config.minHoldMs -> cue = Cue.NONE
+                cue.direction != 0 && nowMs - onSinceMs >= config.minHoldMs -> cue = noCue
             }
             return cue
         }
 
         fun clear() {
-            cue = Cue.NONE
+            cue = noCue
         }
     }
 
@@ -351,9 +356,3 @@ internal fun TurnType.side(): Int = when (this) {
     else -> 0
 }
 
-/** Provisional fixed strength before the turn shows: a planning choice, not measured. */
-private fun TurnType.predictedLevel(): Int = when (this) {
-    TurnType.TURN_SHARP_L, TurnType.TURN_SHARP_R, TurnType.TURN_UTURN -> 3
-    TurnType.TURN_LEFT, TurnType.TURN_RIGHT -> 2
-    else -> 1
-}

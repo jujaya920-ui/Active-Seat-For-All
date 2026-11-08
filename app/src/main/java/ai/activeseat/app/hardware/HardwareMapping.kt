@@ -3,37 +3,51 @@ package ai.activeseat.app.hardware
 import ai.activeseat.app.hint.Hint
 import ai.activeseat.app.hint.LateralCue
 import ai.activeseat.app.hint.LongitudinalCue
+import kotlin.math.atan
 import kotlin.math.max
+import kotlin.math.min
 
-/** Provisional full-strength angles, in degrees, shared by the three seat modules. */
+/** Lean geometry shared by the three seat modules. The limits and yaw ratio are provisional. */
 object HardwareMapping {
-    const val ROLL_DEG = 3.0
-    const val PITCH_DEG = 2.0
-    const val YAW_DEG = 6.0
+    const val GRAVITY_MPS2 = 9.81
+
+    /** Roll and pitch never go past this, whatever the acceleration. */
+    const val MAX_LEAN_DEG = 15.0
+
+    /** The headrest turns this many times the roll, toward the inside of the corner. */
+    const val YAW_PER_ROLL = 2.0
+    const val MAX_YAW_DEG = MAX_LEAN_DEG * YAW_PER_ROLL
+
+    /** The angle that cancels [mps2]: leaning by it sets gravity's sideways part against the inertia. */
+    fun cancelDeg(mps2: Double): Double = min(Math.toDegrees(atan(mps2 / GRAVITY_MPS2)), MAX_LEAN_DEG)
 }
 
 /**
- * Leans against the coming inertia: into the corner, back for a brake, forward for acceleration.
- * Vibration marks the direction of motion: the inner side in a corner. Front and rear only exist
- * on the cushion, where the seat has a front and a rear half.
+ * Leans against the coming inertia: into the corner, back for a brake, forward for acceleration. The
+ * angle comes from the acceleration alone; the strength sets only the vibration. Vibration marks the
+ * direction of motion: the inner side in a corner. Front and rear only exist on the cushion, where
+ * the seat has a front and a rear half.
  */
 fun Hint.toHardwareCommand(): HardwareCommand {
-    val left = when (lateral) {
-        LateralCue.LEFT -> lateralStrength
-        LateralCue.RIGHT -> -lateralStrength
+    val leftSign = when (lateral) {
+        LateralCue.LEFT -> 1.0
+        LateralCue.RIGHT -> -1.0
         LateralCue.NONE -> 0.0
     }
-    val forward = when (longitudinal) {
-        LongitudinalCue.ACCELERATE -> longitudinalStrength
-        LongitudinalCue.BRAKE -> -longitudinalStrength
+    val forwardSign = when (longitudinal) {
+        LongitudinalCue.ACCELERATE -> 1.0
+        LongitudinalCue.BRAKE -> -1.0
         LongitudinalCue.NONE -> 0.0
     }
+    val left = leftSign * lateralStrength
+    val forward = forwardSign * longitudinalStrength
+    val rollDeg = leftSign * HardwareMapping.cancelDeg(lateralMps2)
     val corner = Vibration(left = max(left, 0.0), right = max(-left, 0.0))
     val module = ModuleCommand(
         vibration = corner,
-        rollDeg = HardwareMapping.ROLL_DEG * left,
-        pitchDeg = HardwareMapping.PITCH_DEG * forward,
-        yawDeg = HardwareMapping.YAW_DEG * left,
+        rollDeg = rollDeg,
+        pitchDeg = forwardSign * HardwareMapping.cancelDeg(longitudinalMps2),
+        yawDeg = HardwareMapping.YAW_PER_ROLL * rollDeg,
     )
     return HardwareCommand(
         headrest = module,
@@ -44,8 +58,10 @@ fun Hint.toHardwareCommand(): HardwareCommand {
 }
 
 /**
- * The seat and the watch each follow their own engine's hint, shaped by the passenger's settings.
- * A device turned off rests. Lean speed off keeps the seat upright but leaves its vibration on.
+ * The seat and the watch each follow their own engine's hint, shaped by the passenger's settings, each
+ * of which does one thing: vibration scales the vibration, lean speed sets how fast the seat reaches
+ * its angle and never the angle itself. A device turned off rests. Lean speed off keeps the seat
+ * upright but leaves its vibration on.
  */
 fun toHardwareCommand(seat: Hint, watch: Hint, settings: HardwareSettings): HardwareCommand {
     val base = (if (settings.seatOn) seat else Hint()).toHardwareCommand()

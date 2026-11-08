@@ -96,8 +96,8 @@ fun HardwarePanel(
             }
         }
     }
-    val front = remember { SeatRenderer(SeatCamera.FRONT, tiltSteps = 6) { it.rollDeg / HardwareMapping.ROLL_DEG.toFloat() } }
-    val side = remember { SeatRenderer(SeatCamera.SIDE, tiltSteps = 4) { it.pitchDeg / HardwareMapping.PITCH_DEG.toFloat() } }
+    val front = remember { SeatRenderer(SeatCamera.FRONT, tiltSteps = 6) { it.rollDeg / HardwareMapping.MAX_LEAN_DEG.toFloat() } }
+    val side = remember { SeatRenderer(SeatCamera.SIDE, tiltSteps = 4) { it.pitchDeg / HardwareMapping.MAX_LEAN_DEG.toFloat() } }
     Column(
         modifier = modifier.background(PanelColor).padding(horizontal = 12.dp, vertical = 16.dp),
         verticalArrangement = Arrangement.spacedBy(12.dp),
@@ -314,6 +314,9 @@ private class Points(capacity: Int) {
 private const val SKIN_LEVELS = 10
 private const val POSE_REDRAW_DEG = 0.01f
 private const val DOT_LEVELS = 8
+
+/** Turntable ticks on each side of zero; the last one is the yaw limit. */
+private const val TURNTABLE_STEPS = 6
 private const val DOT_CAPACITY = 8000
 
 /** Draws one view of the seat in [SEAT_VIEW_W] × [SEAT_VIEW_H] units. Buffers are reused between frames. */
@@ -554,7 +557,7 @@ private class SeatRenderer(
         dots.forEachIndexed { i, points -> points.draw(canvas, dotPaint[i]) }
     }
 
-    /** One tilt gauge above the seat. One step is 0.5° real, drawn at the seat's own display scale. */
+    /** One tilt gauge above the seat. Its ends are the lean limit; [ratio] is the angle's share of it. */
     private fun drawTilt(canvas: NativeCanvas, ratio: Float) {
         val cx = 145f
         val cy = 354f
@@ -598,9 +601,8 @@ private class SeatRenderer(
     /** One turntable on the floor under the seat, a true circle in both views. 0 points straight ahead. */
     private fun drawTurntable(canvas: NativeCanvas, yawDeg: Float) {
         val yaw = yawDeg * PI.toFloat() / 180
-        val step = DISPLAY_SCALE * PI.toFloat() / 180
-        val steps = HardwareMapping.YAW_DEG.toInt()
-        val full = steps * step
+        val steps = TURNTABLE_STEPS
+        val full = (HardwareMapping.MAX_YAW_DEG * DISPLAY_SCALE).toFloat() * PI.toFloat() / 180
         val radius = 42f
         fun at(a: Float, r: Float): Pair<Float, Float> {
             camera.project(-r * sin(a), -24f, SEAT_PIVOT_Z + r * cos(a), out)

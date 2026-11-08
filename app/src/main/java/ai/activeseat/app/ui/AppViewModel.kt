@@ -58,6 +58,9 @@ import kotlinx.coroutines.launch
 private const val TAG = "ActiveSeat"
 private const val PREVIEW_STEP_MS = 2500L
 
+// A full-strength test hint: level 4 vibration, and the lean of a hard 4 m/s² motion.
+private const val TEST_MPS2 = 4.0
+
 enum class NavScreen { HOME, FAVORITES, PREVIEW, GUIDING }
 
 /** A favorite on the navigation panel. `demo` is absent when the demo window is the whole route. */
@@ -238,10 +241,10 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
     /** `left`, `right`, `brake` or `accelerate`; anything else returns to the real hint. */
     fun showTestHint(name: String) {
         testHint = when (name) {
-            "left" -> Hint(lateral = LateralCue.LEFT, lateralStrength = 1.0)
-            "right" -> Hint(lateral = LateralCue.RIGHT, lateralStrength = 1.0)
-            "brake" -> Hint(longitudinal = LongitudinalCue.BRAKE, longitudinalStrength = 1.0)
-            "accelerate" -> Hint(longitudinal = LongitudinalCue.ACCELERATE, longitudinalStrength = 1.0)
+            "left" -> Hint(lateral = LateralCue.LEFT, lateralStrength = 1.0, lateralMps2 = TEST_MPS2)
+            "right" -> Hint(lateral = LateralCue.RIGHT, lateralStrength = 1.0, lateralMps2 = TEST_MPS2)
+            "brake" -> Hint(longitudinal = LongitudinalCue.BRAKE, longitudinalStrength = 1.0, longitudinalMps2 = TEST_MPS2)
+            "accelerate" -> Hint(longitudinal = LongitudinalCue.ACCELERATE, longitudinalStrength = 1.0, longitudinalMps2 = TEST_MPS2)
             else -> null
         }
         publish()

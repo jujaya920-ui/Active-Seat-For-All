@@ -6,8 +6,8 @@ import ai.activeseat.app.hint.LongitudinalCue
 import kotlin.math.max
 import kotlin.math.roundToInt
 
-/** Real degrees are too small to see on stage, so the panel draws them this many times larger. */
-const val DISPLAY_SCALE = 4f
+/** The angles are the real cancelling angles, large enough to see, so the panel draws them as they are. */
+const val DISPLAY_SCALE = 1f
 
 /** Provisional strength from which a longitudinal forecast reads as sudden rather than ordinary. */
 private const val SUDDEN_STRENGTH = 0.7

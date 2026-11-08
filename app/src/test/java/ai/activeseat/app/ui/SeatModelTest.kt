@@ -88,9 +88,11 @@ class SeatModelTest {
     @Test
     fun `motion eases to the command and only the cushion gets front and rear vibration`() {
         val motion = SeatMotion()
-        val brake = Hint(longitudinal = LongitudinalCue.BRAKE, longitudinalStrength = 1.0).toHardwareCommand()
-        repeat(200) { motion.step(0.016f, brake) }
-        assertEquals(-2f, motion.pitchDeg, 0.01f)
+        val brake = Hint(longitudinal = LongitudinalCue.BRAKE, longitudinalStrength = 1.0, longitudinalMps2 = 4.0)
+            .toHardwareCommand()
+        repeat(400) { motion.step(0.016f, brake) }
+        assertEquals(brake.headrest.pitchDeg.toFloat(), motion.pitchDeg, 0.01f)
+        assertTrue(motion.pitchDeg < 0)
         assertEquals(1f, motion.vibration[PART_CUSHION][ZONE_BACK], 0.01f)
         assertEquals(0f, motion.vibration[PART_BACKREST][ZONE_BACK], 0f)
         assertEquals(0f, motion.vibration[PART_HEADREST][ZONE_BACK], 0f)

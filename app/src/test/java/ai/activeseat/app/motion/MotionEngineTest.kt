@@ -34,7 +34,7 @@ class MotionEngineTest {
     @Test
     fun measuredCornerTurnsOnInItsDirection() {
         repeat(5) { step(30.0) }
-        // 30 km/h with 200 degrees left: about 2.4 m/s².
+        // 30 km/h with 200 degrees left: about 6 m/s².
         val out = step(30.0, steeringDeg = 200.0)
 
         assertEquals(LateralCue.LEFT, out.hint.lateral)
@@ -143,6 +143,30 @@ class MotionEngineTest {
         val out = step(10.0, signal = TurnSignal.LEFT, nav = NavSnapshot(tbt = listOf(TBTInfo(TurnType.TURN_LEFT, 4.0, "A"))))
 
         assertEquals(LateralCue.LEFT, out.hint.lateral)
+    }
+
+    @Test
+    fun sensitivityDecidesOnlyWhetherACornerTurnsOn() {
+        // 30 km/h with 70 degrees left: about 2.1 m/s², above the on threshold at either sensitivity.
+        val outs = listOf(1.0, 2.0).map { factor ->
+            val scaled = MotionEngine(MotionConfig().scaled(factor))
+            var t = 0L
+            repeat(5) { scaled.step(VehicleSignal(30.0, 0.0, false, TurnSignal.OFF), t, NavSnapshot()); t += STEP_MS }
+            scaled.step(VehicleSignal(30.0, 70.0, false, TurnSignal.OFF), t, NavSnapshot())
+        }
+
+        assertEquals(outs[0].hint, outs[1].hint)
+        assertEquals(outs[0].lateralMps2, outs[0].hint.lateralMps2, 1e-9)
+        assertEquals(0.5, outs[0].hint.lateralStrength, 1e-9)
+    }
+
+    @Test
+    fun aPredictedTurnCarriesItsExpectedAcceleration() {
+        val turn = NavSnapshot(tbt = listOf(TBTInfo(TurnType.TURN_LEFT, 8.0, "A")))
+        val out = step(20.0, signal = TurnSignal.LEFT, nav = turn)
+
+        assertEquals(MotionConfig().turnMps2, out.hint.lateralMps2, 1e-9)
+        assertEquals(0.5, out.hint.lateralStrength, 1e-9)
     }
 
     @Test

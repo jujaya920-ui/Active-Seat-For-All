@@ -18,7 +18,7 @@ data class MotionConfig(
     val accelOnMps2: Double = 1.0,
     /** A measured cue stays on down to this share of its on threshold. */
     val offRatio: Double = 0.6,
-    /** Where strength levels 2, 3 and 4 begin; level 1 begins at the on threshold. */
+    /** Where vibration strength levels 2, 3 and 4 begin. Fixed: the sensitivity does not move them. */
     val levelBoundsMps2: List<Double> = listOf(1.5, 2.5, 4.0),
 
     // Predicted model.
@@ -26,6 +26,14 @@ data class MotionConfig(
     val leadSec: Double = 1.0,
     /** T_APPROACH: how long before reaching the turn point the car starts to turn. */
     val approachSec: Double = 1.2,
+    /**
+     * The lateral acceleration a predicted turn is expected to bring, since none can be measured
+     * before the wheel turns: sharp turns and U-turns, ordinary turns, and lane keeps or ramps.
+     * A planning choice, not measured.
+     */
+    val sharpTurnMps2: Double = 3.0,
+    val turnMps2: Double = 2.0,
+    val gentleTurnMps2: Double = 1.0,
     /** V_MIN: below this the time to a turn means nothing. */
     val minSpeedKph: Double = 5.0,
     /** A_REQ: braking to the target speed would need at least this, so the driver brakes now. */
@@ -48,15 +56,21 @@ data class MotionConfig(
     val minHoldMs: Long = 1000,
 ) {
     /**
-     * Every acceleration threshold times [factor], for a passenger's sensitivity. The level bounds
-     * scale too, so the on threshold never climbs past the level 2 bound. Nav turn prediction has
-     * no acceleration threshold and stays as it is.
+     * The on thresholds times [factor], for a passenger's sensitivity. Sensitivity decides only whether
+     * a cue turns on: the vibration bands and the lean angle stay, so a dull setting that turns on only
+     * for a hard motion also vibrates hard. Nav turn prediction has no acceleration threshold.
      */
     fun scaled(factor: Double): MotionConfig = copy(
         lateralOnMps2 = lateralOnMps2 * factor,
         brakeOnMps2 = brakeOnMps2 * factor,
         accelOnMps2 = accelOnMps2 * factor,
         requiredDecelMps2 = requiredDecelMps2 * factor,
-        levelBoundsMps2 = levelBoundsMps2.map { it * factor },
     )
+
+    /** Vibration strength level 1..4 for an acceleration magnitude. */
+    fun level(magnitudeMps2: Double): Int = (1 + levelBoundsMps2.count { magnitudeMps2 >= it }).coerceAtMost(MAX_LEVEL)
+
+    companion object {
+        const val MAX_LEVEL = 4
+    }
 }
