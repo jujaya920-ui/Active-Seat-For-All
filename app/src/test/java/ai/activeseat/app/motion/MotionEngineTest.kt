@@ -174,7 +174,7 @@ class MotionEngineTest {
         repeat(5) { step(30.0) }
         step(30.0, steeringDeg = 200.0)
 
-        val out = engine.step(VehicleSignal(30.0, 200.0, false, TurnSignal.OFF), ms, NavSnapshot(), drive = false)
+        val out = engine.step(VehicleSignal(30.0, 200.0, false, TurnSignal.OFF), ms, NavSnapshot(), active = false)
 
         assertEquals(LateralCue.NONE, out.hint.lateral)
     }

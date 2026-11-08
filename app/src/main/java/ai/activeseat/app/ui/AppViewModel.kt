@@ -31,7 +31,6 @@ import ai.activeseat.app.nav.NavState
 import ai.activeseat.app.vehicle.CarSignalSource
 import ai.activeseat.app.vehicle.DRIVER_SEAT
 import ai.activeseat.app.vehicle.Gear
-import ai.activeseat.app.vehicle.hasPassenger
 import ai.activeseat.app.vehicle.runsMotion
 import ai.activeseat.app.vehicle.SignalSampler
 import ai.activeseat.app.vehicle.VehicleSignal
@@ -169,16 +168,15 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
                 guidance?.onSpeed(signal.speedKph, now)
                 emitNavi(signal.speedKph, now)
                 val nav = naviFeed.snapshot
-                val drive = signal.gear.runsMotion()
-                val seatOutput = seatEngine?.step(signal, now, nav, drive)
-                val watchOutput = watchEngine?.step(signal, now, nav, drive)
+                // The ON/OFF model: out of a forward gear or with no passenger the engines reset.
+                val active = signal.runsMotion()
+                val seatOutput = seatEngine?.step(signal, now, nav, active)
+                val watchOutput = watchEngine?.step(signal, now, nav, active)
                 _ui.update {
                     it.copy(signal = signal, nav = guidance?.state(), motionStatus = describe(seatOutput ?: watchOutput, signal))
                 }
-                // Occupancy only routes the output: with no passenger every module and the watch rest.
-                val passenger = signal.seats.hasPassenger()
-                lastSeatHint = seatOutput?.hint?.takeIf { passenger } ?: Hint()
-                lastWatchHint = watchOutput?.hint?.takeIf { passenger } ?: Hint()
+                lastSeatHint = seatOutput?.hint ?: Hint()
+                lastWatchHint = watchOutput?.hint ?: Hint()
                 publish()
                 if (BuildConfig.DEBUG) {
                     Log.d(TAG, "SAMPLE $signal nav=${guidance?.state()?.progressM} phase=${guidance?.phase} seat=$seatOutput watch=$watchOutput")

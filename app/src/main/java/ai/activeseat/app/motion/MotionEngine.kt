@@ -76,9 +76,12 @@ class MotionEngine(private val config: MotionConfig = MotionConfig()) {
         longitudinalOut.clear()
     }
 
-    /** `drive` is false in P, N and R: everything turns off at once and starts over. */
-    fun step(signal: VehicleSignal, nowMs: Long, nav: NavSnapshot, drive: Boolean = true): MotionOutput {
-        if (!drive) {
+    /**
+     * `active` is false when the ON/OFF model stops the engine (P, N or R, or no passenger):
+     * everything turns off at once and starts over.
+     */
+    fun step(signal: VehicleSignal, nowMs: Long, nav: NavSnapshot, active: Boolean = true): MotionOutput {
+        if (!active) {
             reset()
             return MotionOutput()
         }

@@ -30,6 +30,12 @@ data class VehicleSignal(
 fun Gear.runsMotion(): Boolean = this == Gear.DRIVE || this == Gear.UNKNOWN
 
 /**
+ * The ON/OFF model's gates before the motion models run: a forward gear and a passenger aboard.
+ * When either fails the engines reset, so they start over once both hold again.
+ */
+fun VehicleSignal.runsMotion(): Boolean = gear.runsMotion() && seats.hasPassenger()
+
+/**
  * Whether anyone besides the driver is seated. With no passenger seat reported at all it is
  * assumed, since not every car or the emulator reports occupancy; the screen shows it as unconfirmed.
  */
