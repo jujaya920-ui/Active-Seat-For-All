@@ -27,6 +27,20 @@ fun forecastText(hint: Hint): String {
     return listOfNotNull(lateral, longitudinal).joinToString(" + ").ifEmpty { "유지" }
 }
 
+/** The title: a live hint always shows; with none, why the seat is at rest. */
+fun seatStatusText(hint: Hint, occupancy: SeatOccupancy): String = when {
+    isForecastActive(hint) || occupancy == SeatOccupancy.OCCUPIED -> forecastText(hint)
+    occupancy == SeatOccupancy.EMPTY -> "미탑승"
+    else -> "탑승 미확인"
+}
+
+/** The line under an idle seat, null for a seat with someone in it. */
+fun occupancyNotice(occupancy: SeatOccupancy): String? = when (occupancy) {
+    SeatOccupancy.OCCUPIED -> null
+    SeatOccupancy.EMPTY -> "탑승이 감지되면 시트가 작동합니다"
+    SeatOccupancy.UNCONFIRMED -> "탑승 여부를 확인할 수 없습니다"
+}
+
 fun isForecastActive(hint: Hint): Boolean = hint.lateral != LateralCue.NONE || hint.longitudinal != LongitudinalCue.NONE
 
 /** The stronger axis, as a whole percentage. */

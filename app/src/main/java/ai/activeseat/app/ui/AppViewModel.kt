@@ -17,6 +17,7 @@ import ai.activeseat.app.hint.Hint
 import ai.activeseat.app.hint.LateralCue
 import ai.activeseat.app.hint.LongitudinalCue
 import ai.activeseat.app.hint.MotionProbabilities
+import ai.activeseat.app.hint.toProbabilities
 import ai.activeseat.app.motion.CueSource
 import ai.activeseat.app.motion.MotionConfig
 import ai.activeseat.app.motion.MotionEngine
@@ -28,10 +29,15 @@ import ai.activeseat.app.nav.FakeNaviHelper
 import ai.activeseat.app.nav.Guidance
 import ai.activeseat.app.nav.NavRoute
 import ai.activeseat.app.nav.NavState
+import ai.activeseat.app.seat.PreferencesSeatSettingsStore
+import ai.activeseat.app.seat.PREVIEW_SPEED_KPH
+import ai.activeseat.app.seat.RearSeatChannel
+import ai.activeseat.app.seat.YawContext
 import ai.activeseat.app.vehicle.CarSignalSource
 import ai.activeseat.app.vehicle.DRIVER_SEAT
 import ai.activeseat.app.vehicle.Gear
-import ai.activeseat.app.vehicle.runsMotion
+import ai.activeseat.app.vehicle.runsMotionFor
+import ai.activeseat.app.vehicle.SeatPosition
 import ai.activeseat.app.vehicle.SignalSampler
 import ai.activeseat.app.vehicle.VehicleSignal
 import android.app.Application
@@ -148,6 +154,11 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
     @Volatile
     private var fakeNavi: FakeNaviHelper? = null
 
+    /** The rear seats' own engines and settings. The passenger seat stays on the fields above. */
+    val rearSeats: List<RearSeatChannel> = listOf(SeatPosition.ROW_2_LEFT, SeatPosition.ROW_2_RIGHT).map {
+        RearSeatChannel(it, PreferencesSeatSettingsStore(application, it), viewModelScope)
+    }
+
     private val _ui = MutableStateFlow(UiState())
     val ui: StateFlow<UiState> = _ui.asStateFlow()
     val playerState: StateFlow<PlayerState> = player.state
@@ -168,8 +179,8 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
                 guidance?.onSpeed(signal.speedKph, now)
                 emitNavi(signal.speedKph, now)
                 val nav = naviFeed.snapshot
-                // The ON/OFF model: out of a forward gear or with no passenger the engines reset.
-                val active = signal.runsMotion()
+                // The ON/OFF model: out of a forward gear or with nobody in this seat the engines reset.
+                val active = signal.runsMotionFor(CabinSeat.PASSENGER.position)
                 val seatOutput = seatEngine?.step(signal, now, nav, active)
                 val watchOutput = watchEngine?.step(signal, now, nav, active)
                 _ui.update {
@@ -178,6 +189,7 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
                 lastSeatHint = seatOutput?.hint ?: Hint()
                 lastWatchHint = watchOutput?.hint ?: Hint()
                 publish()
+                rearSeats.forEach { it.step(signal, now, nav) }
                 if (BuildConfig.DEBUG) {
                     Log.d(TAG, "SAMPLE $signal nav=${guidance?.state()?.progressM} phase=${guidance?.phase} seat=$seatOutput watch=$watchOutput")
                 }
@@ -336,7 +348,8 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
         val seat = shownHint(settings.seatSensitivity, lastSeatHint, scene)
         val watch = shownHint(settings.watchSensitivity, lastWatchHint, scene)
         val shown = if (watch.peak() > seat.peak()) watch else seat
-        val hardware = toHardwareCommand(seat, watch, settings)
+        val yaw = YawContext(if (scene != null) PREVIEW_SPEED_KPH else _ui.value.signal.speedKph, CabinSeat.PASSENGER.position)
+        val hardware = toHardwareCommand(seat, watch, settings, yaw)
         val probabilities = shown.toProbabilities()
         val previous = _ui.value.forecast
         if (BuildConfig.DEBUG && shown != previous) Log.d(TAG, "HINT $shown seat=$seat watch=$watch")
@@ -417,14 +430,6 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
         val options = BitmapFactory.Options().apply { inPreferredConfig = Bitmap.Config.RGB_565 }
         getApplication<Application>().assets.open(path).use { BitmapFactory.decodeStream(it, null, options)!!.asImageBitmap() }
     }.getOrNull()
-
-    /** Each bar is the cue's strength toward that car maneuver, 0 when it is off. */
-    private fun Hint.toProbabilities() = MotionProbabilities(
-        forward = if (longitudinal == LongitudinalCue.ACCELERATE) longitudinalStrength else 0.0,
-        back = if (longitudinal == LongitudinalCue.BRAKE) longitudinalStrength else 0.0,
-        left = if (lateral == LateralCue.LEFT) lateralStrength else 0.0,
-        right = if (lateral == LateralCue.RIGHT) lateralStrength else 0.0,
-    )
 
     // e.g. "D · 동승 · 횡 예측 +0.3 · 종 실측 -1.4 m/s²": the gates, which model holds each axis, and what is measured now.
     // The seat engine's view when the seat is on, else the watch's; null when both are off.

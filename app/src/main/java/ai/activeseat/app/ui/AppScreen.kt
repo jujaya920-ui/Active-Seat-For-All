@@ -1,6 +1,8 @@
 package ai.activeseat.app.ui
 
 import ai.activeseat.app.demo.PlayerState
+import ai.activeseat.app.seat.RearSeatState
+import ai.activeseat.app.vehicle.SeatPosition
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
@@ -14,6 +16,10 @@ import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.darkColorScheme
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
@@ -25,27 +31,41 @@ fun AppScreen(
     player: PlayerState,
     navActions: NavActions,
     settingsActions: SettingsActions,
+    rearSeats: Map<SeatPosition, RearSeatState>,
+    rearSettingsActions: (SeatPosition) -> SettingsActions,
     onToggleSettings: () -> Unit,
     onRequestSpeedPermission: () -> Unit,
 ) {
+    // Follows who is aboard only until the passenger picks a seat; then it stays put.
+    var chosen by remember { mutableStateOf<CabinSeat?>(null) }
+    val selected = chosen ?: firstOccupiedSeat(ui.signal.seats)
+    val selectedRear = rearSeats[selected.position].takeUnless { selected == CabinSeat.PASSENGER }
+    val displays = CabinSeat.entries.associateWith { seat ->
+        rearSeats[seat.position].takeUnless { seat == CabinSeat.PASSENGER }?.toDisplay(seat.occupancy(ui.signal.seats))
+            ?: SeatDisplay(ui.hardware, ui.forecast, ui.probabilities, ui.hintsOff, ui.restKey, seat.occupancy(ui.signal.seats))
+    }
     MaterialTheme(colorScheme = darkColorScheme()) {
         Surface(modifier = Modifier.fillMaxSize()) {
             Row(modifier = Modifier.fillMaxSize()) {
                 // Settings cover the map, so the seat stays in view while a preview plays.
                 if (ui.settingsOpen) {
-                    SettingsPanel(ui.settings, ui.previewLabel, ui.hintsOff, settingsActions, Modifier.weight(1f).fillMaxHeight())
+                    SettingsPanel(
+                        settings = selectedRear?.settings ?: ui.settings,
+                        previewLabel = if (selectedRear != null) selectedRear.previewLabel else ui.previewLabel,
+                        hintsOff = selectedRear?.settings?.allOff ?: ui.hintsOff,
+                        actions = if (selected == CabinSeat.PASSENGER) settingsActions else rearSettingsActions(selected.position),
+                        modifier = Modifier.weight(1f).fillMaxHeight(),
+                    )
                 } else {
                     NavPanel(ui, navActions, Modifier.weight(1f).fillMaxHeight())
                 }
                 Column(modifier = Modifier.weight(1f).fillMaxHeight()) {
-                    HardwarePanel(
-                        command = ui.hardware,
-                        forecast = ui.forecast,
-                        probabilities = ui.probabilities,
+                    SeatSwitchingPanel(
+                        displays = displays,
+                        selected = selected,
+                        onSelect = { chosen = it },
                         settingsOpen = ui.settingsOpen,
                         onToggleSettings = onToggleSettings,
-                        hintsOff = ui.hintsOff,
-                        restKey = ui.restKey,
                         modifier = Modifier.weight(1f).fillMaxWidth(),
                     )
                     ControlBar(ui, player, onRequestSpeedPermission)
@@ -90,3 +110,6 @@ private fun describe(player: PlayerState): String = when (player) {
     is PlayerState.Finished ->
         if (player.failedWrites == 0) "주행 종료" else "주행 종료, 쓰기 실패 ${player.failedWrites}건"
 }
+
+private fun RearSeatState.toDisplay(occupancy: SeatOccupancy) =
+    SeatDisplay(hardware, forecast, probabilities, settings.allOff, restKey, occupancy)

@@ -31,6 +31,7 @@ class MainActivity : ComponentActivity() {
         setContent {
             val ui by viewModel.ui.collectAsState()
             val player by viewModel.playerState.collectAsState()
+            val rearSeats = viewModel.rearSeats.associate { it.position to it.state.collectAsState().value }
             AppScreen(
                 ui = ui,
                 player = player,
@@ -47,6 +48,16 @@ class MainActivity : ComponentActivity() {
                     onReset = viewModel::resetSettings,
                     onPreview = viewModel::startPreview,
                 ),
+                rearSeats = rearSeats,
+                rearSettingsActions = { position ->
+                    val channel = viewModel.rearSeats.first { it.position == position }
+                    SettingsActions(
+                        onClose = viewModel::closeSettings,
+                        onChange = channel::updateSettings,
+                        onReset = channel::resetSettings,
+                        onPreview = channel::startPreview,
+                    )
+                },
                 onToggleSettings = viewModel::toggleSettings,
                 onRequestSpeedPermission = { speedPermission.launch(SPEED_PERMISSION) },
             )
