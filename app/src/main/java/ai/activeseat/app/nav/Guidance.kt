@@ -107,15 +107,13 @@ class Guidance(private val driven: NavRoute, planned: PlannedRoute? = null) {
     companion object {
         /**
          * How long after leaving the planned route the navigation takes to decide the car is off it,
-         * still guiding the old route meanwhile. From the planner's experience of real navigation,
-         * not measured on Pleos.
+         * still guiding the old route meanwhile. Provisional.
          */
         const val OFF_ROUTE_DETECT_MS = 2000L
 
         /**
-         * How long the search for a new route takes. From the planner's experience of real
-         * navigation, not measured on Pleos, nor is what the real NaviHelper reports meanwhile (the
-         * SDK has only the end event).
+         * How long the search for a new route takes. Provisional. What the real NaviHelper reports
+         * meanwhile is unknown: the SDK has only the end event.
          */
         const val REROUTE_SEARCH_MS = 2000L
     }
