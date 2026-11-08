@@ -25,3 +25,11 @@ data class MotionProbabilities(
     val left: Double = 0.0,
     val right: Double = 0.0,
 )
+
+/** Each bar is the cue's strength toward that car maneuver, 0 when it is off. */
+fun Hint.toProbabilities() = MotionProbabilities(
+    forward = if (longitudinal == LongitudinalCue.ACCELERATE) longitudinalStrength else 0.0,
+    back = if (longitudinal == LongitudinalCue.BRAKE) longitudinalStrength else 0.0,
+    left = if (lateral == LateralCue.LEFT) lateralStrength else 0.0,
+    right = if (lateral == LateralCue.RIGHT) lateralStrength else 0.0,
+)
