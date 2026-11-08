@@ -43,9 +43,12 @@ private const val WAVE_STRENGTH_SPEEDUP_SEC = 0.9f
 private const val SETTLED = 0.002f
 const val ZONE_ACTIVE = 0.02f
 
-private typealias Surface = (u: Float, a: Float) -> FloatArray
+internal typealias Surface = (u: Float, a: Float) -> FloatArray
 
-private class PartSpec(
+/** A stitched line on a part: the surface position (u, angle) at 0..1 along it. */
+internal class SeamCurve(val steps: Int, val at: (Float) -> Pair<Float, Float>)
+
+internal class PartSpec(
     val rows: Int,
     val cols: Int,
     val spanCm: Float,
@@ -53,6 +56,7 @@ private class PartSpec(
     val seams: FloatArray,
     val crossSeams: FloatArray,
     val center: (Float) -> Float,
+    val curves: List<SeamCurve> = emptyList(),
     val surface: Surface,
 )
 
@@ -80,12 +84,12 @@ class SeatPart(
     val dots: SeatDots,
 )
 
-private fun sup(c: Float, power: Float) = c.sign * abs(c).pow(power)
-private fun taper(u: Float, power: Float) = sqrt(maxOf(0f, 1f - abs(2 * u - 1).pow(power)))
-private fun dish(x: Float, w: Float, depth: Float) = depth * (1 - min(1f, x * x / (w * w)))
+internal fun sup(c: Float, power: Float) = c.sign * abs(c).pow(power)
+internal fun taper(u: Float, power: Float) = sqrt(maxOf(0f, 1f - abs(2 * u - 1).pow(power)))
+internal fun dish(x: Float, w: Float, depth: Float) = depth * (1 - min(1f, x * x / (w * w)))
 
 /** Soft padding: a raised centre panel and side bolsters with a stitched groove between them. */
-private fun pad(t: Float, u: Float, bands: Float): Float {
+internal fun pad(t: Float, u: Float, bands: Float): Float {
     val m = abs(t)
     val core = 0.55f
     if (m < core) {
@@ -190,7 +194,7 @@ private fun buildDots(spec: PartSpec, random: () -> Float): SeatDots {
     )
 }
 
-private fun buildPart(spec: PartSpec, random: () -> Float): SeatPart {
+internal fun buildPart(spec: PartSpec, random: () -> Float): SeatPart {
     val count = spec.rows * spec.cols
     val vertices = FloatArray(count * 3)
     val normals = FloatArray(count * 3)
@@ -204,7 +208,8 @@ private fun buildPart(spec: PartSpec, random: () -> Float): SeatPart {
     }
     val angle = { t: Float -> acos(t.sign * abs(t).pow(1 / spec.power)) }
     val seams = spec.seams.map { t -> seamLine(spec, 40) { step -> 0.06f + 0.88f * step to angle(t) } } +
-        spec.crossSeams.map { u -> seamLine(spec, 24) { step -> u to angle(-0.55f + 1.1f * step) } }
+        spec.crossSeams.map { u -> seamLine(spec, 24) { step -> u to angle(-0.55f + 1.1f * step) } } +
+        spec.curves.map { curve -> seamLine(spec, curve.steps, curve.at) }
     return SeatPart(spec.rows, spec.cols, vertices, normals, seams, buildDots(spec, random))
 }
 
@@ -268,6 +273,9 @@ class SeatCamera private constructor(turnDeg: Float, tipDeg: Float, private val 
     companion object {
         val FRONT = SeatCamera(0f, 20f, 0f)
         val SIDE = SeatCamera(88f, 14f, 16f)
+
+        /** The side view from the seat's other side, for a seat whose door is on the passenger's left. */
+        val SIDE_MIRRORED = SeatCamera(-88f, 14f, -16f)
     }
 }
 
