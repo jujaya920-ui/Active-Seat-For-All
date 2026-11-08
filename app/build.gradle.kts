@@ -1,18 +1,8 @@
-import java.util.Properties
-
 plugins {
     id("com.android.application")
     id("org.jetbrains.kotlin.android")
     id("org.jetbrains.kotlin.plugin.compose")
 }
-
-val localProperties = Properties().apply {
-    val file = rootProject.file("local.properties")
-    if (file.exists()) file.inputStream().use { load(it) }
-}
-
-fun localString(key: String): String =
-    "\"" + (findProperty(key)?.toString() ?: localProperties.getProperty(key, "")).trim().replace("\\", "\\\\").replace("\"", "\\\"") + "\""
 
 android {
     namespace = "ai.activeseat.app"
@@ -25,9 +15,6 @@ android {
         targetSdk = 34
         versionCode = 1
         versionName = "0.1.0"
-
-        buildConfigField("String", "PREDICT_URL", localString("predict.url"))
-        buildConfigField("String", "PREDICT_TOKEN", localString("predict.token"))
     }
 
     compileOptions {

@@ -16,19 +16,11 @@
 | 폴더 | 내용 |
 | --- | --- |
 | `app/` | Android 앱 (Kotlin, Jetpack Compose) |
-| `server/` | 예측 API 서버 (Vercel) |
 | `tools/` | 시나리오, 지도 생성 등 PC용 도구 |
 
 ## 시작하기
 
 JDK 17, Android SDK, Node.js 24, Pleos Connect 에뮬레이터가 필요합니다.
-
-프로젝트 루트의 `local.properties`에 예측 서버 정보를 넣습니다. 이 파일은 git에 올리지 않습니다.
-
-```properties
-predict.url=<예측 서버 주소>
-predict.token=<접근 토큰>
-```
 
 앱을 빌드합니다.
 
@@ -40,10 +32,6 @@ predict.token=<접근 토큰>
 
 ```bash
 ./gradlew testDebugUnitTest
-```
-
-```bash
-npm test --prefix server
 ```
 
 ```bash

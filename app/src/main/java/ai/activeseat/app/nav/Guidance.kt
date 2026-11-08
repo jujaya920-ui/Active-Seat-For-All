@@ -1,7 +1,5 @@
 package ai.activeseat.app.nav
 
-import ai.activeseat.app.prediction.NavContext
-import ai.activeseat.app.prediction.NavItem
 import kotlin.math.min
 import kotlin.math.roundToInt
 
@@ -31,7 +29,7 @@ data class ActiveGuide(val route: NavRoute, val progressM: Double)
  * guides the driven route from there. Without a planned route it guides the driven route
  * throughout, as before rerouting existed.
  */
-class Guidance(private val driven: NavRoute, planned: PlannedRoute? = null) : NavContext {
+class Guidance(private val driven: NavRoute, planned: PlannedRoute? = null) {
     private val planned = planned ?: PlannedRoute(driven, Double.POSITIVE_INFINITY)
     private val navigator = RouteNavigator(driven)
 
@@ -104,16 +102,6 @@ class Guidance(private val driven: NavRoute, planned: PlannedRoute? = null) : Na
             shownFraction = shown.route.fractionAt(shown.progressM),
             rerouting = guide == null,
         )
-    }
-
-    @Synchronized
-    override fun nextTurn(): NavItem? = active()?.let { g ->
-        g.route.upcomingTurn(g.progressM)?.let { NavItem(it.type, (it.atM - g.progressM).roundToInt()) }
-    }
-
-    @Synchronized
-    override fun frontEvent(): NavItem? = active()?.let { g ->
-        g.route.upcomingFrontEvent(g.progressM)?.let { NavItem(it.type, (it.atM - g.progressM).roundToInt()) }
     }
 
     companion object {

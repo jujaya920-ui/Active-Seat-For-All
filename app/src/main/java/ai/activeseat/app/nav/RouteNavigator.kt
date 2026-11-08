@@ -1,7 +1,5 @@
 package ai.activeseat.app.nav
 
-import ai.activeseat.app.prediction.NavContext
-import ai.activeseat.app.prediction.NavItem
 import kotlin.math.max
 import kotlin.math.min
 import kotlin.math.roundToInt
@@ -15,7 +13,7 @@ private const val KPH_TO_M_PER_MS = 1.0 / 3600.0
 private const val ARRIVAL_TOLERANCE_M = 5.0
 
 /** Dead-reckons the car along a route from speed alone; steering does not affect position. */
-class RouteNavigator(private val route: NavRoute) : NavContext {
+class RouteNavigator(private val route: NavRoute) {
     private var progressM = 0.0
     private var lastAtMs: Long? = null
     private var lastKph = 0.0
@@ -72,17 +70,9 @@ class RouteNavigator(private val route: NavRoute) : NavContext {
         )
     }
 
-    @Synchronized
-    override fun nextTurn(): NavItem? = upcomingTurn()?.toNavItem()
-
-    @Synchronized
-    override fun frontEvent(): NavItem? = upcomingFrontEvent()?.toNavItem()
-
     private fun upcomingTurn() = route.upcomingTurn(progressM)
 
     private fun upcomingFrontEvent() = route.upcomingFrontEvent(progressM)
 
     private fun NavMark.distanceM() = (atM - progressM).roundToInt()
-
-    private fun NavMark.toNavItem() = NavItem(type, distanceM())
 }

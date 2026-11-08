@@ -147,7 +147,6 @@ class GuidanceTest {
         assertNull(state.nextTurn)
         assertNull(state.frontEvent)
         assertSame(planned.route, state.shownRoute)
-        assertNull(guidance.nextTurn())
     }
 
     @Test

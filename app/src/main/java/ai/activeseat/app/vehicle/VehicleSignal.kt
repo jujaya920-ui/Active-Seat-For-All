@@ -1,10 +1,6 @@
 package ai.activeseat.app.vehicle
 
-enum class TurnSignal(val wire: String) {
-    OFF("off"),
-    LEFT("left"),
-    RIGHT("right"),
-}
+enum class TurnSignal { OFF, LEFT, RIGHT }
 
 /** The selected gear, from AAOS GEAR_SELECTION. UNKNOWN until the car has reported one. */
 enum class Gear { UNKNOWN, PARK, REVERSE, NEUTRAL, DRIVE }
@@ -41,12 +37,3 @@ fun Map<SeatPosition, Boolean>.hasPassenger(): Boolean {
     val passengers = filterKeys { it != DRIVER_SEAT }
     return passengers.isEmpty() || passengers.values.any { it }
 }
-
-/** One entry of the prediction contract's `signals` array. */
-data class SignalSample(
-    val ageMs: Long,
-    val speedKph: Double,
-    val steeringDeg: Double,
-    val brake: Boolean,
-    val turnSignal: String,
-)

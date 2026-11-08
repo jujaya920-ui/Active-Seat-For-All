@@ -38,7 +38,6 @@ import {
   steeringDegFor,
   turnType,
 } from '../scenario/from-route.mjs';
-import { deriveLabels, pushLevels, pushSpans } from '../scenario/labels.mjs';
 import { fitRoute } from '../scenario/projection.mjs';
 import { validateScenario } from '../scenario/validate.mjs';
 
@@ -436,36 +435,4 @@ test('reports an absent map image as a warning, not an error', () => {
   const report = validateScenario(fresh(), { assetsDir: 'does-not-exist' });
   assert.deepEqual(report.errors, []);
   assert.match(report.warnings.join(), /map image/);
-});
-
-test('push labels follow the body: braking forward, a left turn right', () => {
-  const row = (t, speedKph, steeringDeg) => ({ t, speedKph, steeringDeg, brakePct: 0, turnSignal: 'Off' });
-  const braking = Array.from({ length: 12 }, (_, i) => row(i * 0.2, 60 - i * 2, 0));
-  assert.ok(pushLevels(braking).at(-1).forward > 0);
-  const turning = Array.from({ length: 12 }, (_, i) => row(i * 0.2, 30, 120));
-  assert.ok(pushLevels(turning).at(-1).right > 0);
-});
-
-test('labels look exactly horizon seconds ahead', () => {
-  const scenario = fresh();
-  const rows = deriveLabels(scenario, { horizonS: 2 });
-  const levels = pushLevels(scenario.timeline);
-  assert.equal(rows.length, scenario.timeline.length - 10);
-  rows.slice(0, 50).forEach((r, i) => assert.equal(r.forward, levels[i + 10].forward));
-  assert.equal(rows.at(-1).targetT, scenario.timeline.at(-1).t);
-});
-
-// A slow, gentle corner pushes too little to feel, so only corners that reach a weak push count.
-test('every corner a passenger can feel shows up as a sideways push span', () => {
-  const scenario = fresh();
-  const spans = pushSpans(scenario.timeline).filter((s) => s.dir === 'left' || s.dir === 'right');
-  const levels = pushLevels(scenario.timeline);
-  const felt = (c) => levels.slice(c.startI, c.endI + 1).some((l) => l.left || l.right);
-  const corners = detectManeuvers(scenario.timeline).corners.filter(felt);
-  assert.ok(corners.length > 0);
-  for (const c of corners) {
-    const at = scenario.timeline[c.startI].t;
-    const side = c.direction === 'left' ? 'right' : 'left';
-    assert.ok(spans.some((s) => s.dir === side && s.toT >= at && s.fromT <= at + 6), `corner at ${at}`);
-  }
 });

@@ -1,6 +1,5 @@
 package ai.activeseat.app.nav
 
-import ai.activeseat.app.prediction.NavItem
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNull
@@ -128,15 +127,15 @@ class RouteNavigatorTest {
     fun nextTurnAdvancesPastEachTurnAndKeepsType() {
         val turns = listOf(NavMark(100.0, "TURN_LEFT", "a"), NavMark(300.0, "SOME_NAVI_VALUE", "b"))
         val nav = RouteNavigator(route(turns = turns))
-        assertEquals(NavItem("TURN_LEFT", 100), nav.nextTurn())
+        assertEquals(turns[0], nav.state().nextTurn)
+        assertEquals(100, nav.state().nextTurnDistanceM)
 
         val at = nav.drive(seconds = 1)
-        assertEquals(NavItem("SOME_NAVI_VALUE", 200), nav.nextTurn())
         assertEquals(turns[1], nav.state().nextTurn)
         assertEquals(200, nav.state().nextTurnDistanceM)
 
         nav.drive(seconds = 2, startMs = at)
-        assertNull(nav.nextTurn())
+        assertNull(nav.state().nextTurn)
         assertNull(nav.state().nextTurnDistanceM)
     }
 
@@ -144,7 +143,7 @@ class RouteNavigatorTest {
     fun distanceRoundsToNearestMetre() {
         val nav = RouteNavigator(route(turns = listOf(NavMark(99.6, "TURN_LEFT", "a"))))
 
-        assertEquals(100, nav.nextTurn()?.distanceM)
+        assertEquals(100, nav.state().nextTurnDistanceM)
     }
 
     @Test
@@ -153,16 +152,14 @@ class RouteNavigatorTest {
         val nav = RouteNavigator(route(frontEvents = events))
 
         val at = nav.drive(seconds = 6)
-        assertNull(nav.frontEvent())
         assertNull(nav.state().frontEvent)
 
         val later = nav.drive(seconds = 1, startMs = at)
-        assertEquals(NavItem("CONGESTION", 300), nav.frontEvent())
         assertEquals(events[0], nav.state().frontEvent)
         assertEquals(300, nav.state().frontEventDistanceM)
 
         nav.drive(seconds = 3, startMs = later)
-        assertNull(nav.frontEvent())
+        assertNull(nav.state().frontEvent)
     }
 
     @Test
@@ -171,7 +168,7 @@ class RouteNavigatorTest {
 
         nav.drive(seconds = 7)
 
-        assertNull(nav.frontEvent())
+        assertNull(nav.state().frontEvent)
     }
 
     @Test
