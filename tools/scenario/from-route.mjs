@@ -984,7 +984,7 @@ export function buildScenario({ id, title }, osrm, plannedOsrm = null) {
     mapSize: [width, height],
     originRoad: osrm.routes[0].legs[0].steps.find((step) => step.name).name,
     // The app gives hints only with a passenger aboard, read from the car as in real use.
-    occupiedSeats: ['driver', 'passenger'],
+    occupiedSeats: ['driver', 'passenger', 'rear_left'],
     demoWindow: chooseDemoWindow(timeline),
     ...(planned && {
       plannedRoute: {
