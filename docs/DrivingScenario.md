@@ -55,7 +55,7 @@ Active Seat For All의 핵심은 **곧 일어날 움직임을 미리 알리는 �
 | 경로 위 지점 | `turns`, `frontEvents`, `cameras`, `cautionPoints` | 출발점에서의 거리(`atM`)와 NaviHelper 값 그대로의 종류. 회전, 정체, 과속 카메라, 주의 지점 |
 | 안내 경로와 이탈 지점 | `plannedRoute` | 운전자가 따르지 않을 안내 경로와 두 경로가 갈라지는 거리. 이탈 시나리오만 |
 | 주행 타임라인 | `timeline` | 0.2초마다 속도(km/h), 조향(도, 왼쪽 양수), 브레이크와 액셀(%), 방향지시등(`Off`, `BlinkLeft`, `BlinkRight`) |
-| 탑승 | `occupiedSeats` | 사람이 앉은 콘솔 좌석|
+| 탑승 | `occupiedSeats` | 사람이 앉은 콘솔 좌석. 생성기는 운전석, 조수석, 뒷좌석 왼쪽을 넣는다 |
 | 시연 구간 | `demoWindow` | 재생할 타임라인 구간(초). 이 값이 없는 시나리오는 앱 목록에 나오지 않는다 |
 
 **정의하지 않는 것**
