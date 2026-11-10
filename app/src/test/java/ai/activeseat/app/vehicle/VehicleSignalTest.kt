@@ -1,5 +1,7 @@
 package ai.activeseat.app.vehicle
 
+import ai.activeseat.app.hardware.Occupancy
+import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
 import org.junit.Test
@@ -42,6 +44,27 @@ class VehicleSignalTest {
         assertFalse(VehicleSignal(gear = Gear.PARK, seats = passenger).runsMotion())
         assertFalse(VehicleSignal(gear = Gear.DRIVE, seats = mapOf(SeatPosition.ROW_1_RIGHT to false)).runsMotion())
         assertTrue(VehicleSignal(gear = Gear.DRIVE).runsMotion())
+    }
+
+    @Test
+    fun eachSeatRunsOnlyWithSomeoneInIt() {
+        val leftOnly = mapOf(SeatPosition.ROW_1_RIGHT to true, SeatPosition.ROW_2_LEFT to true, SeatPosition.ROW_2_RIGHT to false)
+        val drive = VehicleSignal(gear = Gear.DRIVE, seats = leftOnly)
+        assertTrue(drive.runsMotionFor(SeatPosition.ROW_1_RIGHT))
+        assertTrue(drive.runsMotionFor(SeatPosition.ROW_2_LEFT))
+        assertFalse(drive.runsMotionFor(SeatPosition.ROW_2_RIGHT))
+        assertFalse(drive.copy(gear = Gear.PARK).runsMotionFor(SeatPosition.ROW_2_LEFT))
+    }
+
+    @Test
+    fun anUnreportedSeatCountsOnlyWhenNoSeatReported() {
+        // The car reports some seats: one it never reported is not assumed taken.
+        val someReported = mapOf(SeatPosition.ROW_1_RIGHT to true)
+        assertFalse(someReported.isTaken(SeatPosition.ROW_2_RIGHT))
+        assertEquals(Occupancy(passenger = true, rearLeft = false, rearRight = false), someReported.occupancy())
+        // Nothing reported at all: the car cannot tell, so every seat counts.
+        assertTrue(emptyMap<SeatPosition, Boolean>().isTaken(SeatPosition.ROW_2_RIGHT))
+        assertEquals(Occupancy(), emptyMap<SeatPosition, Boolean>().occupancy())
     }
 
     @Test
