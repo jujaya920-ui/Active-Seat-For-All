@@ -1,5 +1,8 @@
 package ai.activeseat.app.vehicle
 
+import ai.activeseat.app.hardware.CabinPlace
+import ai.activeseat.app.hardware.Occupancy
+
 enum class TurnSignal { OFF, LEFT, RIGHT }
 
 /** The selected gear, from AAOS GEAR_SELECTION. UNKNOWN until the car has reported one. */
@@ -43,3 +46,29 @@ fun Map<SeatPosition, Boolean>.hasPassenger(): Boolean {
     val passengers = filterKeys { it != DRIVER_SEAT }
     return passengers.isEmpty() || passengers.values.any { it }
 }
+
+/** The car's seat for each seat the app drives. */
+val CabinPlace.position: SeatPosition
+    get() = when (this) {
+        CabinPlace.PASSENGER -> SeatPosition.ROW_1_RIGHT
+        CabinPlace.REAR_LEFT -> SeatPosition.ROW_2_LEFT
+        CabinPlace.REAR_RIGHT -> SeatPosition.ROW_2_RIGHT
+    }
+
+/**
+ * Whether someone sits in that very seat. A seat that has not reported counts as taken only when no
+ * passenger seat has reported at all, as in [hasPassenger]: then the car cannot tell, and the screen
+ * shows it as unconfirmed.
+ */
+fun Map<SeatPosition, Boolean>.isTaken(position: SeatPosition): Boolean =
+    this[position] ?: filterKeys { it != DRIVER_SEAT }.isEmpty()
+
+/** The ON/OFF model for one seat: a forward gear and someone in that very seat. */
+fun VehicleSignal.runsMotionFor(position: SeatPosition): Boolean = gear.runsMotion() && seats.isTaken(position)
+
+/** Whether each seat the app drives is taken, by [isTaken]. */
+fun Map<SeatPosition, Boolean>.occupancy() = Occupancy(
+    passenger = isTaken(CabinPlace.PASSENGER.position),
+    rearLeft = isTaken(CabinPlace.REAR_LEFT.position),
+    rearRight = isTaken(CabinPlace.REAR_RIGHT.position),
+)
