@@ -1,5 +1,7 @@
 package ai.activeseat.app.ui
 
+import ai.activeseat.app.hardware.CabinPlace
+import ai.activeseat.app.hardware.CabinSeat
 import ai.activeseat.app.demo.PlayerState
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
@@ -26,6 +28,8 @@ fun AppScreen(
     navActions: NavActions,
     settingsActions: SettingsActions,
     onToggleSettings: () -> Unit,
+    onSelectSeat: (CabinSeat) -> Unit,
+    onSelectRear: (CabinPlace) -> Unit,
     onRequestSpeedPermission: () -> Unit,
 ) {
     MaterialTheme(colorScheme = darkColorScheme()) {
@@ -33,13 +37,18 @@ fun AppScreen(
             Row(modifier = Modifier.fillMaxSize()) {
                 // Settings cover the map, so the seat stays in view while a preview plays.
                 if (ui.settingsOpen) {
-                    SettingsPanel(ui.settings, ui.previewLabel, ui.hintsOff, settingsActions, Modifier.weight(1f).fillMaxHeight())
+                    SettingsPanel(ui.settings, ui.selectedPlace, ui.previewLabel, ui.hintsOff, settingsActions, Modifier.weight(1f).fillMaxHeight())
                 } else {
                     NavPanel(ui, navActions, Modifier.weight(1f).fillMaxHeight())
                 }
                 Column(modifier = Modifier.weight(1f).fillMaxHeight()) {
                     HardwarePanel(
                         command = ui.hardware,
+                        seats = ui.signal.seats,
+                        selectedSeat = ui.selectedSeat,
+                        selectedPlace = ui.selectedPlace,
+                        onSelectSeat = onSelectSeat,
+                        onSelectRear = onSelectRear,
                         forecast = ui.forecast,
                         probabilities = ui.probabilities,
                         settingsOpen = ui.settingsOpen,

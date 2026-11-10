@@ -10,9 +10,13 @@ import ai.activeseat.app.demo.toNavRoute
 import ai.activeseat.app.demo.toPlannedRoute
 import ai.activeseat.app.hardware.HardwareCommand
 import ai.activeseat.app.hardware.HardwareSettings
+import ai.activeseat.app.hardware.Occupancy
 import ai.activeseat.app.hardware.LEVEL_MAX
 import ai.activeseat.app.hardware.LEVEL_OFF
-import ai.activeseat.app.hardware.toHardwareCommand
+import ai.activeseat.app.hardware.CabinPlace
+import ai.activeseat.app.hardware.CabinSeat
+import ai.activeseat.app.hardware.seatCommand
+import ai.activeseat.app.vehicle.occupancy
 import ai.activeseat.app.hint.Hint
 import ai.activeseat.app.hint.LateralCue
 import ai.activeseat.app.hint.LongitudinalCue
@@ -31,7 +35,8 @@ import ai.activeseat.app.nav.NavState
 import ai.activeseat.app.vehicle.CarSignalSource
 import ai.activeseat.app.vehicle.DRIVER_SEAT
 import ai.activeseat.app.vehicle.Gear
-import ai.activeseat.app.vehicle.runsMotion
+import ai.activeseat.app.vehicle.position
+import ai.activeseat.app.vehicle.runsMotionFor
 import ai.activeseat.app.vehicle.SignalSampler
 import ai.activeseat.app.vehicle.VehicleSignal
 import android.app.Application
@@ -59,6 +64,7 @@ private const val PREVIEW_STEP_MS = 2500L
 
 // A full-strength test hint: level 4 vibration, and the lean of a hard 4 m/s² motion.
 private const val TEST_MPS2 = 4.0
+private const val TEST_WHEEL_DEG = 25.0
 
 enum class NavScreen { HOME, FAVORITES, PREVIEW, GUIDING }
 
@@ -88,14 +94,33 @@ data class UiState(
     val hardware: HardwareCommand = HardwareCommand(),
     val forecast: Hint = Hint(),
     val probabilities: MotionProbabilities = MotionProbabilities(),
-    val settings: HardwareSettings = HardwareSettings(),
+    /** Each seat's own settings. The settings panel edits [selectedPlace]'s. */
+    val seatSettings: Map<CabinPlace, HardwareSettings> = CabinPlace.entries.associateWith { HardwareSettings() },
+    /** The seat tab in view. */
+    val selectedSeat: CabinSeat = CabinSeat.PASSENGER,
+    /** Which rear seat the rear tab's title, bars, watch and settings follow. */
+    val selectedRear: CabinPlace = CabinPlace.REAR_LEFT,
     val settingsOpen: Boolean = false,
     /** The label of the preview scene playing, null when no preview plays. */
     val previewLabel: String? = null,
     /** Bumped on every settings change or reset: the display snaps the seat and watch to rest. */
     val restKey: Int = 0,
 ) {
+    /** The seat the title, bars, watch and settings follow: the passenger seat, or the chosen rear seat. */
+    val selectedPlace: CabinPlace get() = if (selectedSeat == CabinSeat.PASSENGER) CabinPlace.PASSENGER else selectedRear
+    val settings: HardwareSettings get() = seatSettings.getValue(selectedPlace)
     val hintsOff: Boolean get() = settings.allOff
+}
+
+/**
+ * One seat's own settings, and the seat and watch engines that run at its sensitivities; an engine
+ * is null when turned off.
+ */
+private class SeatChannel(settings: HardwareSettings, engineFor: (Int) -> MotionEngine?) {
+    @Volatile var seatEngine: MotionEngine? = engineFor(settings.seatSensitivity)
+    @Volatile var watchEngine: MotionEngine? = engineFor(settings.watchSensitivity)
+    @Volatile var lastSeatHint = Hint()
+    @Volatile var lastWatchHint = Hint()
 }
 
 /** Wires the packages together: the only place that sees both demo and product code. */
@@ -117,18 +142,12 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
     // Scenarios load in the background, so a start asked for early waits for them.
     private var pendingStart: Pair<String, Boolean>? = null
 
-    // The seat and the watch each run an engine at their own sensitivity; null when turned off.
-    @Volatile
-    private var seatEngine: MotionEngine? = null
+    // Each seat runs its own seat and watch engines at its own sensitivities.
+    private lateinit var channels: Map<CabinPlace, SeatChannel>
 
+    // Until the passenger picks a seat, the screen opens on the first one taken.
     @Volatile
-    private var watchEngine: MotionEngine? = null
-
-    @Volatile
-    private var lastSeatHint = Hint()
-
-    @Volatile
-    private var lastWatchHint = Hint()
+    private var seatChosen = false
 
     // The preview scene playing, shown instead of the engines' hints.
     @Volatile
@@ -153,10 +172,9 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
     val playerState: StateFlow<PlayerState> = player.state
 
     init {
-        val settings = loadSettings()
-        seatEngine = engineFor(settings.seatSensitivity)
-        watchEngine = engineFor(settings.watchSensitivity)
-        _ui.update { it.copy(settings = settings) }
+        val settings = CabinPlace.entries.associateWith { loadSettings(it) }
+        channels = settings.mapValues { (_, value) -> SeatChannel(value, ::engineFor) }
+        _ui.update { it.copy(seatSettings = settings) }
 
         viewModelScope.launch(Dispatchers.IO) { loadScenarios() }
 
@@ -169,17 +187,22 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
                 emitNavi(signal.speedKph, now)
                 val nav = naviFeed.snapshot
                 // The ON/OFF model: out of a forward gear or with no passenger the engines reset.
-                val active = signal.runsMotion()
-                val seatOutput = seatEngine?.step(signal, now, nav, active)
-                val watchOutput = watchEngine?.step(signal, now, nav, active)
-                _ui.update {
-                    it.copy(signal = signal, nav = guidance?.state(), motionStatus = describe(seatOutput ?: watchOutput, signal))
+                // Each seat runs only with someone in that very seat.
+                val outputs = channels.mapValues { (place, channel) ->
+                    val active = signal.runsMotionFor(place.position)
+                    val seatOutput = channel.seatEngine?.step(signal, now, nav, active)
+                    val watchOutput = channel.watchEngine?.step(signal, now, nav, active)
+                    channel.lastSeatHint = seatOutput?.hint ?: Hint()
+                    channel.lastWatchHint = watchOutput?.hint ?: Hint()
+                    seatOutput ?: watchOutput
                 }
-                lastSeatHint = seatOutput?.hint ?: Hint()
-                lastWatchHint = watchOutput?.hint ?: Hint()
+                _ui.update {
+                    val opened = if (seatChosen) it else it.openOnTakenSeat(signal.seats.occupancy())
+                    opened.copy(signal = signal, nav = guidance?.state(), motionStatus = describe(outputs[opened.selectedPlace], signal))
+                }
                 publish()
                 if (BuildConfig.DEBUG) {
-                    Log.d(TAG, "SAMPLE $signal nav=${guidance?.state()?.progressM} phase=${guidance?.phase} seat=$seatOutput watch=$watchOutput")
+                    Log.d(TAG, "SAMPLE $signal nav=${guidance?.state()?.progressM} phase=${guidance?.phase} outputs=$outputs")
                 }
             }
         }
@@ -239,8 +262,8 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
     /** `left`, `right`, `brake` or `accelerate`; anything else returns to the real hint. */
     fun showTestHint(name: String) {
         testHint = when (name) {
-            "left" -> Hint(lateral = LateralCue.LEFT, lateralStrength = 1.0, lateralMps2 = TEST_MPS2)
-            "right" -> Hint(lateral = LateralCue.RIGHT, lateralStrength = 1.0, lateralMps2 = TEST_MPS2)
+            "left" -> Hint(lateral = LateralCue.LEFT, lateralStrength = 1.0, lateralMps2 = TEST_MPS2, wheelDeg = TEST_WHEEL_DEG)
+            "right" -> Hint(lateral = LateralCue.RIGHT, lateralStrength = 1.0, lateralMps2 = TEST_MPS2, wheelDeg = TEST_WHEEL_DEG)
             "brake" -> Hint(longitudinal = LongitudinalCue.BRAKE, longitudinalStrength = 1.0, longitudinalMps2 = TEST_MPS2)
             "accelerate" -> Hint(longitudinal = LongitudinalCue.ACCELERATE, longitudinalStrength = 1.0, longitudinalMps2 = TEST_MPS2)
             else -> null
@@ -254,6 +277,37 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
 
     fun closeSettings() {
         _ui.update { it.copy(settingsOpen = false) }
+    }
+
+    /** Shows another seat's tab: its hints, and its settings when the panel is open. Stops a preview. */
+    fun selectSeat(seat: CabinSeat) {
+        if (seat == _ui.value.selectedSeat) return
+        seatChosen = true
+        stopPreview()
+        _ui.update { it.copy(selectedSeat = seat, previewLabel = null) }
+        publish()
+    }
+
+    /** Which rear seat the rear tab follows and edits. Stops a preview. */
+    fun selectRear(place: CabinPlace) {
+        if (place.tab != CabinSeat.REAR || place == _ui.value.selectedRear) return
+        seatChosen = true
+        stopPreview()
+        _ui.update { it.copy(selectedRear = place, previewLabel = null) }
+        publish()
+    }
+
+    private fun stopPreview() {
+        previewJob?.cancel()
+        previewJob = null
+        preview = null
+    }
+
+    /** Opens on the first seat taken, the passenger seat first; stays put when nobody is aboard. */
+    private fun UiState.openOnTakenSeat(occupancy: Occupancy): UiState {
+        val taken = CabinPlace.entries.firstOrNull { occupancy.of(it) } ?: return this
+        val rear = if (taken.tab == CabinSeat.REAR) taken else CabinPlace.entries.firstOrNull { it.tab == CabinSeat.REAR && occupancy.of(it) } ?: selectedRear
+        return copy(selectedSeat = taken.tab, selectedRear = rear)
     }
 
     fun updateSettings(next: HardwareSettings) {
@@ -327,20 +381,30 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
     }
 
     /**
-     * Shows each device's hint: the preview scene, else the test hint, else its engine's. The title
-     * and bars follow the stronger of the two, the seat on a tie.
+     * Shows each seat's device hints, each at that seat's own settings: the preview scene for the
+     * seat in view, else the test hint, else its engine's. The title and bars follow the seat in
+     * view, the stronger of its seat and watch hints, the seat on a tie.
      */
     private fun publish() {
-        val settings = _ui.value.settings
-        val scene = preview
-        val seat = shownHint(settings.seatSensitivity, lastSeatHint, scene)
-        val watch = shownHint(settings.watchSensitivity, lastWatchHint, scene)
-        val shown = if (watch.peak() > seat.peak()) watch else seat
-        val hardware = toHardwareCommand(seat, watch, settings)
-        val probabilities = shown.toProbabilities()
-        val previous = _ui.value.forecast
-        if (BuildConfig.DEBUG && shown != previous) Log.d(TAG, "HINT $shown seat=$seat watch=$watch")
-        _ui.update { it.copy(hardware = hardware, forecast = shown, probabilities = probabilities) }
+        val state = _ui.value
+        val occupancy = state.signal.seats.occupancy()
+        val shown = CabinPlace.entries.associateWith { place ->
+            val settings = state.seatSettings.getValue(place)
+            val channel = channels.getValue(place)
+            val scene = preview.takeIf { place == state.selectedPlace }
+            val seat = shownHint(settings.seatSensitivity, channel.lastSeatHint, scene)
+            val watch = shownHint(settings.watchSensitivity, channel.lastWatchHint, scene)
+            Triple(seat, watch, seatCommand(place, seat, watch, settings, occupancy))
+        }
+        val hardware = HardwareCommand(
+            passenger = shown.getValue(CabinPlace.PASSENGER).third,
+            rearLeft = shown.getValue(CabinPlace.REAR_LEFT).third,
+            rearRight = shown.getValue(CabinPlace.REAR_RIGHT).third,
+        )
+        val (seat, watch) = shown.getValue(state.selectedPlace)
+        val forecast = if (watch.peak() > seat.peak()) watch else seat
+        if (BuildConfig.DEBUG && forecast != state.forecast) Log.d(TAG, "HINT ${state.selectedPlace} $forecast seat=$seat watch=$watch")
+        _ui.update { it.copy(hardware = hardware, forecast = forecast, probabilities = forecast.toProbabilities()) }
     }
 
     private fun shownHint(sensitivity: Int, engineHint: Hint, scene: PreviewManeuver?): Hint {
@@ -357,11 +421,13 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
         previewJob?.cancel()
         previewJob = null
         preview = null
+        val cabin = _ui.value.selectedPlace
         val previous = _ui.value.settings
-        if (next.seatSensitivity != previous.seatSensitivity) seatEngine = engineFor(next.seatSensitivity)
-        if (next.watchSensitivity != previous.watchSensitivity) watchEngine = engineFor(next.watchSensitivity)
-        saveSettings(next)
-        _ui.update { it.copy(settings = next, previewLabel = null, restKey = it.restKey + 1) }
+        val channel = channels.getValue(cabin)
+        if (next.seatSensitivity != previous.seatSensitivity) channel.seatEngine = engineFor(next.seatSensitivity)
+        if (next.watchSensitivity != previous.watchSensitivity) channel.watchEngine = engineFor(next.watchSensitivity)
+        saveSettings(cabin, next)
+        _ui.update { it.copy(seatSettings = it.seatSettings + (cabin to next), previewLabel = null, restKey = it.restKey + 1) }
         publish()
     }
 
@@ -371,9 +437,19 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
         publish()
     }
 
-    private fun loadSettings(): HardwareSettings {
+    /**
+     * Each seat has its own preferences file. The passenger seat keeps the app's original one; a rear
+     * seat's is named after its position, as the earlier per-seat version kept them.
+     */
+    private fun prefsFor(place: CabinPlace) = when (place) {
+        CabinPlace.PASSENGER -> prefs
+        else -> getApplication<Application>().getSharedPreferences("settings_${place.position}", Context.MODE_PRIVATE)
+    }
+
+    private fun loadSettings(place: CabinPlace): HardwareSettings {
         val default = HardwareSettings()
-        fun level(key: String, fallback: Int) = prefs.getInt(key, fallback).coerceIn(LEVEL_OFF, LEVEL_MAX)
+        val store = prefsFor(place)
+        fun level(key: String, fallback: Int) = store.getInt(key, fallback).coerceIn(LEVEL_OFF, LEVEL_MAX)
         return HardwareSettings(
             seatSensitivity = level(KEY_SEAT_SENSITIVITY, default.seatSensitivity),
             seatVibration = level(KEY_SEAT_VIBRATION, default.seatVibration),
@@ -383,8 +459,8 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
         )
     }
 
-    private fun saveSettings(settings: HardwareSettings) {
-        prefs.edit()
+    private fun saveSettings(place: CabinPlace, settings: HardwareSettings) {
+        prefsFor(place).edit()
             .putInt(KEY_SEAT_SENSITIVITY, settings.seatSensitivity)
             .putInt(KEY_SEAT_VIBRATION, settings.seatVibration)
             .putInt(KEY_LEAN_SPEED, settings.leanSpeed)

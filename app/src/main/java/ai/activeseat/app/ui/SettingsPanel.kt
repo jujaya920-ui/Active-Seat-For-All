@@ -1,5 +1,7 @@
 package ai.activeseat.app.ui
 
+import ai.activeseat.app.hardware.CabinPlace
+import ai.activeseat.app.hardware.CabinSeat
 import ai.activeseat.app.hardware.HardwareSettings
 import ai.activeseat.app.hardware.LEVEL_MAX
 import ai.activeseat.app.hardware.LEVEL_OFF
@@ -64,6 +66,8 @@ class SettingsActions(
     val onChange: (HardwareSettings) -> Unit,
     val onReset: () -> Unit,
     val onPreview: () -> Unit,
+    /** Picks which rear seat's settings the panel edits. */
+    val onSelectRear: (CabinPlace) -> Unit,
 )
 
 /** Alpha of a slider that does nothing while its module is off. */
@@ -76,12 +80,13 @@ private val TrackInset = 16.dp
 private val TrackHeight = 60.dp
 
 /**
- * The passenger's settings, in the left half while open. The seat panel on the right stays in view,
+ * The settings of the seat in view, in the left half while open. The seat panel on the right stays in view,
  * so a preview shows the effect of each setting. See the plan's 사용자 설정.
  */
 @Composable
 fun SettingsPanel(
     settings: HardwareSettings,
+    seat: CabinPlace,
     previewLabel: String?,
     hintsOff: Boolean,
     actions: SettingsActions,
@@ -97,7 +102,9 @@ fun SettingsPanel(
             .padding(horizontal = 12.dp, vertical = 16.dp),
         verticalArrangement = Arrangement.spacedBy(12.dp),
     ) {
-        SettingsTitle(actions.onClose)
+        SettingsTitle(seat, actions.onClose)
+        // The rear tab shows both rear seats, each with its own settings: pick the one to edit.
+        if (seat.tab == CabinSeat.REAR) RearSeatChoice(seat, actions.onSelectRear)
         Column(
             modifier = Modifier
                 .weight(1f)
@@ -150,11 +157,37 @@ fun SettingsPanel(
     }
 }
 
+/** Two buttons, 왼쪽 and 오른쪽, the chosen one filled amber. */
 @Composable
-private fun SettingsTitle(onClose: () -> Unit) {
+private fun RearSeatChoice(chosen: CabinPlace, onSelect: (CabinPlace) -> Unit) {
+    Row(
+        Modifier.fillMaxWidth().padding(horizontal = 28.dp),
+        horizontalArrangement = Arrangement.spacedBy(12.dp),
+    ) {
+        listOf(CabinPlace.REAR_LEFT to "왼쪽", CabinPlace.REAR_RIGHT to "오른쪽").forEach { (place, label) ->
+            val on = place == chosen
+            Box(
+                Modifier
+                    .weight(1f)
+                    .height(52.dp)
+                    .background(if (on) Amber else Color.Transparent)
+                    .border(1.dp, if (on) Amber else BracketColor)
+                    .clickable { onSelect(place) }
+                    .semantics { contentDescription = "${place.label} 설정" },
+                contentAlignment = Alignment.Center,
+            ) {
+                Text(label, color = if (on) PanelColor else TextBright, fontSize = 20.sp, fontWeight = FontWeight.Bold, maxLines = 1)
+            }
+        }
+    }
+}
+
+@Composable
+private fun SettingsTitle(seat: CabinPlace, onClose: () -> Unit) {
     Box(Modifier.fillMaxWidth().height(132.dp).drawBehind { drawBrackets() }) {
         Box(Modifier.matchParentSize().padding(top = 10.dp, bottom = 24.dp), contentAlignment = Alignment.Center) {
-            PanelText("설정", 40.sp, FontWeight.Bold, TextBright)
+            // Each seat keeps its own settings; the tab in view picks which.
+            PanelText("${seat.label} 설정", 40.sp, FontWeight.Bold, TextBright)
         }
         Box(
             modifier = Modifier
