@@ -2,6 +2,7 @@ package ai.activeseat.app.ui
 
 import ai.activeseat.app.hardware.HardwareCommand
 import ai.activeseat.app.hardware.ModuleCommand
+import ai.activeseat.app.hardware.SeatCommand
 import ai.activeseat.app.hint.Hint
 import ai.activeseat.app.hint.LateralCue
 import ai.activeseat.app.hint.LongitudinalCue
@@ -91,7 +92,7 @@ class SeatModelTest {
         val brake = Hint(longitudinal = LongitudinalCue.BRAKE, longitudinalStrength = 1.0, longitudinalMps2 = 4.0)
             .toHardwareCommand()
         repeat(400) { motion.step(0.016f, brake) }
-        assertEquals(brake.headrest.pitchDeg.toFloat(), motion.pitchDeg, 0.01f)
+        assertEquals(brake.passenger.cushion.pitchDeg.toFloat(), motion.pitchDeg, 0.01f)
         assertTrue(motion.pitchDeg < 0)
         assertEquals(1f, motion.vibration[PART_CUSHION][ZONE_BACK], 0.01f)
         assertEquals(0f, motion.vibration[PART_BACKREST][ZONE_BACK], 0f)
@@ -114,7 +115,7 @@ class SeatModelTest {
         assertEquals(0f, motion.phase[PART_BACKREST][ZONE_LEFT], 0f)
     }
 
-    private fun leanLeft(leanSec: Double) = HardwareCommand(headrest = ModuleCommand(rollDeg = 2.0), leanSec = leanSec)
+    private fun leanLeft(leanSec: Double) = HardwareCommand(passenger = SeatCommand(cushion = ModuleCommand(rollDeg = 2.0), leanSec = leanSec))
 
     @Test
     fun `the lean reaches 95 percent at its lean time without overshooting`() {
@@ -155,8 +156,10 @@ class SeatModelTest {
     fun `reset puts everything back at rest at once`() {
         val motion = SeatMotion()
         val busy = HardwareCommand(
-            headrest = ModuleCommand(vibration = Vibration(left = 1.0), rollDeg = 2.0, pitchDeg = 1.0, yawDeg = 3.0),
-            watchStrength = 1.0,
+            passenger = SeatCommand(
+                headrest = ModuleCommand(vibration = Vibration(left = 1.0), rollDeg = 2.0, pitchDeg = 1.0, yawDeg = 3.0),
+                watchStrength = 1.0,
+            ),
         )
         repeat(100) { motion.step(0.016f, busy) }
         motion.reset()
@@ -167,5 +170,110 @@ class SeatModelTest {
         assertEquals(0f, motion.vibration[PART_HEADREST][ZONE_LEFT], 0f)
         assertEquals(0f, motion.phase[PART_HEADREST][ZONE_LEFT], 0f)
         assertFalse(motion.step(0.016f, HardwareCommand()))
+    }
+
+    @Test
+    fun `the rear motion follows the rear seat's own modules`() {
+        val rear = SeatMotion { it.rearLeft }
+        val left = Hint(lateral = LateralCue.LEFT, lateralStrength = 1.0, lateralMps2 = 2.0, wheelDeg = 16.0).toHardwareCommand()
+        repeat(400) { rear.step(0.016f, left) }
+        assertEquals(16f, rear.yaw[PART_HEADREST], 0.01f)
+        assertEquals(0f, rear.yaw[PART_BACKREST], 0f)
+        assertEquals(0f, rear.yaw[PART_CUSHION], 0f)
+        assertTrue(rear.roll[PART_CUSHION] > 0)
+        assertEquals(0f, rear.roll[PART_BACKREST], 0f)
+    }
+
+    private fun placed(tf: FloatArray, x: Float, y: Float, z: Float) = floatArrayOf(
+        tf[0] * x + tf[1] * y + tf[2] * z + tf[9],
+        tf[3] * x + tf[4] * y + tf[5] * z + tf[10],
+        tf[6] * x + tf[7] * y + tf[8] * z + tf[11],
+    )
+
+    @Test
+    fun `the passenger transform matches the whole-seat rotation`() {
+        val roll = floatArrayOf(3f, 3f, 3f)
+        val pitch = floatArrayOf(-2f, -2f, -2f)
+        val yaw = floatArrayOf(10f, 10f, 10f)
+        val tf = partTransform(SeatKind.PASSENGER, PART_HEADREST, roll, pitch, yaw, 1f)
+        val r = seatRotation(3f, -2f, 10f)
+        val z0 = -21f - SEAT_PIVOT_Z
+        val expected = floatArrayOf(r[0] * 5 + r[1] * 80 + r[2] * z0, r[3] * 5 + r[4] * 80 + r[5] * z0, r[6] * 5 + r[7] * 80 + r[8] * z0 + SEAT_PIVOT_Z)
+        val actual = placed(tf, 5f, 80f, -21f)
+        for (i in 0..2) assertEquals(expected[i], actual[i], 1e-3f)
+    }
+
+    @Test
+    fun `the rear headrest turns about its own axis and the cushion stays put`() {
+        val yaw = floatArrayOf(0f, 0f, 20f)
+        val zero = FloatArray(3)
+        val head = partTransform(SeatKind.REAR, PART_HEADREST, zero, zero, yaw, 1f)
+        val axis = placed(head, 0f, 80f, HEADREST_AXIS_Z)
+        assertEquals(0f, axis[0], 1e-4f)
+        assertEquals(HEADREST_AXIS_Z, axis[2], 1e-4f)
+        // x is to the right, so the front of the headrest swings to -x for a left turn.
+        assertTrue(placed(head, 0f, 80f, HEADREST_AXIS_Z + 5f)[0] < 0)
+        val cushion = partTransform(SeatKind.REAR, PART_CUSHION, zero, zero, yaw, 1f)
+        val p = placed(cushion, 10f, 0f, 30f)
+        assertEquals(10f, p[0], 1e-4f)
+        assertEquals(30f, p[2], 1e-4f)
+    }
+
+    @Test
+    fun `the rear headrest rides on the backrest's pitch`() {
+        val pitch = floatArrayOf(0f, 5f, 0f)
+        val zero = FloatArray(3)
+        val head = partTransform(SeatKind.REAR, PART_HEADREST, zero, pitch, zero, 1f)
+        val back = partTransform(SeatKind.REAR, PART_BACKREST, zero, pitch, zero, 1f)
+        val a = placed(head, 0f, 70f, -21f)
+        val b = placed(back, 0f, 70f, -21f)
+        for (i in 0..2) assertEquals(b[i], a[i], 1e-4f)
+    }
+
+    @Test
+    fun `the rear row is two seats with a fixed console between them`() {
+        val parts = REAR_ROW_SHAPE.parts
+        val seats = parts.filter { it.role != PART_FIXED }
+        assertEquals(listOf(PART_CUSHION, PART_BACKREST, PART_HEADREST, PART_CUSHION, PART_BACKREST, PART_HEADREST), seats.map { it.role })
+        assertTrue(parts.any { it.role == PART_FIXED })
+        assertEquals(listOf(-REAR_SEAT_X, REAR_SEAT_X), REAR_ROW_SHAPE.headrests.map { it.axisX })
+        // Each cushion stays on its own side of the console.
+        val cushions = seats.filter { it.role == PART_CUSHION }.map { c -> c.part.vertices.filterIndexed { i, _ -> i % 3 == 0 } }
+        assertTrue(cushions[0].max() < -5f)
+        assertTrue(cushions[1].min() > 5f)
+    }
+
+    @Test
+    fun `each rear seat vibrates on its own left and right halves`() {
+        for (shapePart in REAR_ROW_SHAPE.parts.filter { it.role != PART_FIXED }) {
+            val d = shapePart.part.dots
+            assertTrue(d.sideZone.any { it == ZONE_LEFT })
+            assertTrue(d.sideZone.any { it == ZONE_RIGHT })
+            assertTrue(d.sideReach.all { it in 0f..1f })
+        }
+    }
+
+    @Test
+    fun `each rear cushion rolls about its own centre`() {
+        val roll = floatArrayOf(10f, 0f, 0f)
+        val zero = FloatArray(3)
+        for (cushion in REAR_ROW_SHAPE.parts.filter { it.role == PART_CUSHION }) {
+            val tf = partTransform(SeatKind.REAR, PART_CUSHION, roll, zero, zero, 1f, cushion.axisX, cushion.axisZ, cushion.pivotX)
+            val centre = placed(tf, cushion.pivotX, 0f, 20f)
+            assertEquals(cushion.pivotX, centre[0], 1e-3f)
+            assertEquals(0f, centre[1], 1e-3f)
+        }
+    }
+
+    @Test
+    fun `a rear headrest turns about its own seat`() {
+        val yaw = floatArrayOf(0f, 0f, 20f)
+        val zero = FloatArray(3)
+        for (head in REAR_ROW_SHAPE.headrests) {
+            val tf = partTransform(SeatKind.REAR, PART_HEADREST, zero, zero, yaw, 1f, head.axisX, head.axisZ, head.pivotX)
+            val axis = placed(tf, head.axisX, 75f, head.axisZ)
+            assertEquals(head.axisX, axis[0], 1e-3f)
+            assertEquals(head.axisZ, axis[2], 1e-3f)
+        }
     }
 }
