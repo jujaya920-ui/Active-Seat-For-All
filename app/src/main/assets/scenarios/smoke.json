@@ -1,4 +1,4 @@
-{"id": "smoke", "title": "Smoke test", "mapImage": "", "mapSize": [1000, 1000], "routePx": [[0, 0], [100, 0]], "routeLengthM": 60, "turns": [], "frontEvents": [], "timeline": [
+{"id": "smoke", "title": "Smoke test", "mapImage": "", "mapSize": [1000, 1000], "routePx": [[0, 0], [100, 0]], "routeLengthM": 60, "occupiedSeats": ["driver", "passenger", "rear_left"], "turns": [], "frontEvents": [], "timeline": [
   {"t": 0.0, "speedKph": 0, "steeringDeg": 0, "brakePct": 0, "acceleratorPct": 30, "turnSignal": "Off"},
   {"t": 0.2, "speedKph": 3, "steeringDeg": 0, "brakePct": 0, "acceleratorPct": 30, "turnSignal": "Off"},
   {"t": 0.4, "speedKph": 6, "steeringDeg": 0, "brakePct": 0, "acceleratorPct": 30, "turnSignal": "Off"},

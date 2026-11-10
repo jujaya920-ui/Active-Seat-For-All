@@ -4,7 +4,7 @@
   "mapImage": "maps/seoulstation-cheongpa.webp",
   "mapSize": [1888,2286],
   "originRoad": "한강대로",
-  "occupiedSeats": ["driver","passenger"],
+  "occupiedSeats": ["driver","passenger","rear_left"],
   "demoWindow": {"fromSec":0,"toSec":108.2},
   "routeLengthM": 1050,
   "routePx": [[944,900],[946,950],[950,993],[950,999],[952,1009],[955,1020],[956,1027],[960,1052],[967,1089],[983,1165],[985,1172],[987,1190],[942,1199],[929,1203],[911,1209],[901,1212],[902,1220],[902,1230],[903,1319],[902,1385]],
