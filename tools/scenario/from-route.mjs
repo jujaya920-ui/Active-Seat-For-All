@@ -983,8 +983,9 @@ export function buildScenario({ id, title }, osrm, plannedOsrm = null) {
     mapImage: `maps/${id}.webp`,
     mapSize: [width, height],
     originRoad: osrm.routes[0].legs[0].steps.find((step) => step.name).name,
-    // The app gives hints only with a passenger aboard, read from the car as in real use.
-    occupiedSeats: ['driver', 'passenger'],
+    // The app gives hints only with a passenger aboard, read from the car as in real use. Every
+    // scenario seats the front passenger and the rear left seat, so both seat tabs have someone.
+    occupiedSeats: ['driver', 'passenger', 'rear_left'],
     demoWindow: chooseDemoWindow(timeline),
     ...(planned && {
       plannedRoute: {
