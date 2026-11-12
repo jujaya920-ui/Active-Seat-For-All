@@ -1,0 +1,10 @@
+# Store text with LF in the repository whatever the local core.autocrlf says.
+* text=auto
+
+# The scenario test compares these files byte for byte with the generator's LF output.
+*.json text eol=lf
+
+# Shell scripts break with CRLF; Windows batch files expect it.
+gradlew text eol=lf
+*.sh text eol=lf
+*.bat text eol=crlf
