@@ -1,8 +1,8 @@
 package ai.activeseat.app.motion
 
 /**
- * Every threshold of the motion engine in one place. Values are provisional: set by replaying the
- * generated scenarios, and to be set again from real driving logs when there are any.
+ * Every threshold of the motion engine in one place. Values are provisional, chosen without
+ * real-driving experiments, and to be set again from real driving logs when there are any.
  */
 data class MotionConfig(
     // Vehicle constants: the scenario generator's car, to be checked against the real one.
@@ -36,8 +36,7 @@ data class MotionConfig(
     val gentleTurnMps2: Double = 1.0,
     /**
      * The road-wheel angle a predicted turn is expected to bring, for the seat's turn, by the same
-     * three kinds. Set from the scenarios' intersection turns (steering 200-280°, so 14-20° at the
-     * wheels at ratio 14). A planning choice, not measured.
+     * three kinds. A planning choice, not measured.
      */
     val sharpTurnWheelDeg: Double = 25.0,
     val turnWheelDeg: Double = 16.0,
