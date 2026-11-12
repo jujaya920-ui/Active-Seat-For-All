@@ -12,3 +12,6 @@ node_modules/
 .vercel/
 .env*
 CLAUDE.md
+
+# Application form: holds personal details
+docs/참가신청서.docx
