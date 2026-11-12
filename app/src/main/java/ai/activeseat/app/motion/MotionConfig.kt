@@ -34,6 +34,14 @@ data class MotionConfig(
     val sharpTurnMps2: Double = 3.0,
     val turnMps2: Double = 2.0,
     val gentleTurnMps2: Double = 1.0,
+    /**
+     * The road-wheel angle a predicted turn is expected to bring, for the seat's turn, by the same
+     * three kinds. Set from the scenarios' intersection turns (steering 200-280°, so 14-20° at the
+     * wheels at ratio 14). A planning choice, not measured.
+     */
+    val sharpTurnWheelDeg: Double = 25.0,
+    val turnWheelDeg: Double = 16.0,
+    val gentleTurnWheelDeg: Double = 4.0,
     /** V_MIN: below this the time to a turn means nothing. */
     val minSpeedKph: Double = 5.0,
     /** A_REQ: braking to the target speed would need at least this, so the driver brakes now. */

@@ -12,9 +12,9 @@ class PreviewCueTest {
 
     private fun hint(maneuver: PreviewManeuver, sensitivity: Int) = config(sensitivity).previewHint(maneuver)
 
-    private fun left(strength: Double) = Hint(lateral = LateralCue.LEFT, lateralStrength = strength, lateralMps2 = 1.2)
+    private fun left(strength: Double) = Hint(lateral = LateralCue.LEFT, lateralStrength = strength, lateralMps2 = 1.2, wheelDeg = 8.0)
 
-    private fun right(strength: Double) = Hint(lateral = LateralCue.RIGHT, lateralStrength = strength, lateralMps2 = 2.2)
+    private fun right(strength: Double) = Hint(lateral = LateralCue.RIGHT, lateralStrength = strength, lateralMps2 = 2.2, wheelDeg = 16.0)
 
     private fun brake(strength: Double) =
         Hint(longitudinal = LongitudinalCue.BRAKE, longitudinalStrength = strength, longitudinalMps2 = 1.3)

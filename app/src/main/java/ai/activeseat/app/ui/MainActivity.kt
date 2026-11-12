@@ -46,8 +46,11 @@ class MainActivity : ComponentActivity() {
                     onChange = viewModel::updateSettings,
                     onReset = viewModel::resetSettings,
                     onPreview = viewModel::startPreview,
+                    onSelectRear = viewModel::selectRear,
                 ),
                 onToggleSettings = viewModel::toggleSettings,
+                onSelectSeat = viewModel::selectSeat,
+                onSelectRear = viewModel::selectRear,
                 onRequestSpeedPermission = { speedPermission.launch(SPEED_PERMISSION) },
             )
         }

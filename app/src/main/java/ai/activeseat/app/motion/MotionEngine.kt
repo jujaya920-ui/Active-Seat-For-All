@@ -93,6 +93,7 @@ class MotionEngine(private val config: MotionConfig = MotionConfig()) {
         trackArrivals(nav)
 
         val lateral = lateralMps2(v, signal.steeringDeg)
+        val wheelDeg = abs(signal.steeringDeg) / config.steeringRatio
         val longitudinal = slope()
         measuredLateral = measure(measuredLateral, lateral, config.lateralOnMps2, config.lateralOnMps2)
         measuredLongitudinal = measure(measuredLongitudinal, longitudinal, config.accelOnMps2, config.brakeOnMps2)
@@ -101,8 +102,8 @@ class MotionEngine(private val config: MotionConfig = MotionConfig()) {
         updateSlowdown(nav, v, nowMs)
 
         val lateralCue = when {
-            measuredLateral != 0 -> Cue(measuredLateral, abs(lateral), CueSource.MEASURED)
-            turn.on -> Cue(turn.direction, turn.mps2, CueSource.PREDICTED)
+            measuredLateral != 0 -> Cue(measuredLateral, abs(lateral), CueSource.MEASURED, wheelDeg)
+            turn.on -> Cue(turn.direction, turn.mps2, CueSource.PREDICTED, turn.wheelDeg)
             else -> noCue
         }
         val longitudinalCue = when {
@@ -121,6 +122,7 @@ class MotionEngine(private val config: MotionConfig = MotionConfig()) {
                 },
                 lateralStrength = lat.strength(),
                 lateralMps2 = lat.mps2,
+                wheelDeg = lat.wheelDeg,
                 longitudinal = when (lon.direction) {
                     1 -> LongitudinalCue.ACCELERATE
                     -1 -> LongitudinalCue.BRAKE
@@ -197,7 +199,7 @@ class MotionEngine(private val config: MotionConfig = MotionConfig()) {
         val direction = next.type.side()
         if (direction == 0 || signal.side() != direction || v * 3.6 < config.minSpeedKph || remainingM <= 0) return
         if (measuredLateral == direction) return
-        if (remainingM / v <= config.leadSec + config.approachSec) turn.start(turnId, direction, expectedMps2(next.type), nowMs)
+        if (remainingM / v <= config.leadSec + config.approachSec) turn.start(turnId, direction, expectedMps2(next.type), nowMs, expectedWheelDeg(next.type))
     }
 
     private fun updateSlowdown(nav: NavSnapshot, v: Double, nowMs: Long) {
@@ -236,6 +238,13 @@ class MotionEngine(private val config: MotionConfig = MotionConfig()) {
         else -> config.gentleTurnMps2
     }
 
+    /** Provisional expected road-wheel angle before the turn shows, by the same kinds as [expectedMps2]. */
+    private fun expectedWheelDeg(type: TurnType): Double = when (type) {
+        TurnType.TURN_SHARP_L, TurnType.TURN_SHARP_R, TurnType.TURN_UTURN -> config.sharpTurnWheelDeg
+        TurnType.TURN_LEFT, TurnType.TURN_RIGHT -> config.turnWheelDeg
+        else -> config.gentleTurnWheelDeg
+    }
+
     private fun travelledSince(id: String) = odometerM - (pointOdometerM[id] ?: odometerM)
 
     private fun targetKph(type: CautionPointType): Double? = when (type) {
@@ -256,14 +265,16 @@ class MotionEngine(private val config: MotionConfig = MotionConfig()) {
         var on = false
         var direction = 0
         var mps2 = 0.0
+        var wheelDeg = 0.0
         var passedAtMs: Long? = null
         val consumed = mutableSetOf<String>()
         private var onSinceMs = 0L
 
-        fun start(key: String, direction: Int, mps2: Double, nowMs: Long) {
+        fun start(key: String, direction: Int, mps2: Double, nowMs: Long, wheelDeg: Double = 0.0) {
             this.key = key
             this.direction = direction
             this.mps2 = mps2
+            this.wheelDeg = wheelDeg
             on = true
             onSinceMs = nowMs
             passedAtMs = null
@@ -301,8 +312,11 @@ class MotionEngine(private val config: MotionConfig = MotionConfig()) {
         }
     }
 
-    /** One axis's cue: its direction and the acceleration it stands for, which sets strength and angle. */
-    private inner class Cue(val direction: Int, val mps2: Double, val source: CueSource) {
+    /**
+     * One axis's cue: its direction and the acceleration it stands for, which sets strength and lean
+     * angle. A lateral cue also carries the road-wheel angle, which sets the seat's turn.
+     */
+    private inner class Cue(val direction: Int, val mps2: Double, val source: CueSource, val wheelDeg: Double = 0.0) {
         fun strength(): Double =
             if (direction == 0) 0.0 else config.level(mps2).toDouble() / MotionConfig.MAX_LEVEL
     }

@@ -39,6 +39,8 @@ class MotionEngineTest {
 
         assertEquals(LateralCue.LEFT, out.hint.lateral)
         assertEquals(CueSource.MEASURED, out.lateralSource)
+        // The seat turns by the road-wheel angle: steering over the ratio.
+        assertEquals(200.0 / MotionConfig().steeringRatio, out.hint.wheelDeg, 1e-9)
     }
 
     @Test
@@ -109,6 +111,7 @@ class MotionEngineTest {
         val out = step(20.0, signal = TurnSignal.LEFT, nav = turn)
         assertEquals(LateralCue.LEFT, out.hint.lateral)
         assertEquals(CueSource.PREDICTED, out.lateralSource)
+        assertEquals(MotionConfig().turnWheelDeg, out.hint.wheelDeg, 1e-9)
     }
 
     @Test

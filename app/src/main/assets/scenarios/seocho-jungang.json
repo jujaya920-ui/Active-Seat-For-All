@@ -4,7 +4,7 @@
   "mapImage": "maps/seocho-jungang.webp",
   "mapSize": [1934,2184],
   "originRoad": "서초대로",
-  "occupiedSeats": ["driver","passenger"],
+  "occupiedSeats": ["driver","passenger","rear_left"],
   "demoWindow": {"fromSec":0,"toSec":102.8},
   "routeLengthM": 958,
   "routePx": [[1034,901],[977,923],[967,927],[957,930],[952,933],[945,938],[946,949],[948,961],[950,974],[958,1027],[965,1078],[974,1145],[983,1213],[988,1250],[957,1262],[900,1284]],

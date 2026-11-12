@@ -4,7 +4,7 @@
   "mapImage": "maps/seohyeon-yanghyeon.webp",
   "mapSize": [1998,2219],
   "originRoad": "서현로",
-  "occupiedSeats": ["driver","passenger"],
+  "occupiedSeats": ["driver","passenger","rear_left"],
   "demoWindow": {"fromSec":0,"toSec":108.8},
   "plannedRoute": {"routePx":[[1009,900],[1014,904],[1026,911],[1082,951],[1098,962],[1092,972],[1047,1035],[1031,1059],[1016,1078],[1000,1102],[980,1129],[969,1146],[963,1155],[953,1174],[943,1193],[941,1196],[938,1200],[933,1207],[930,1210],[908,1231],[900,1238],[973,1319]],"routeLengthM":1057,"turns":[{"atM":205,"type":"TURN_RIGHT","description":"양현로 방면"},{"atM":851,"type":"TURN_LEFT","description":"분당로 방면"},{"atM":1057,"type":"TURN_ARRIVE","description":"서현 양현로 도착"}],"leaveAtM":205.5},
   "routeLengthM": 1178,

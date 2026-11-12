@@ -1,17 +1,23 @@
 package ai.activeseat.app.ui
 
+import ai.activeseat.app.hardware.CabinPlace
+import ai.activeseat.app.hardware.CabinSeat
 import ai.activeseat.app.hardware.HardwareCommand
 import ai.activeseat.app.hardware.HardwareMapping
 import ai.activeseat.app.hint.Hint
 import ai.activeseat.app.hint.MotionProbabilities
+import ai.activeseat.app.vehicle.SeatPosition
+import ai.activeseat.app.vehicle.occupancy
 import android.graphics.Bitmap
 import android.graphics.Canvas as NativeCanvas
 import android.graphics.Paint
 import android.graphics.Path
 import android.graphics.RectF
 import androidx.compose.foundation.Canvas
+import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -25,17 +31,24 @@ import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.pager.HorizontalPager
+import androidx.compose.foundation.pager.rememberPagerState
+import androidx.compose.foundation.selection.selectable
 import androidx.compose.foundation.selection.toggleable
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.LongState
 import androidx.compose.runtime.mutableLongStateOf
+import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.runtime.snapshotFlow
+import kotlinx.coroutines.launch
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.withFrameNanos
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.alpha
 import androidx.compose.ui.draw.clipToBounds
 import androidx.compose.ui.draw.drawBehind
 import androidx.compose.ui.geometry.Offset
@@ -68,9 +81,16 @@ import kotlin.math.sin
  * [restKey] changes when the seat must snap back to rest at once, such as when a preview stops.
  * [hintsOff] shows that neither the seat nor the watch is controlled.
  */
+// The pager is experimental in this Compose version.
+@OptIn(ExperimentalFoundationApi::class)
 @Composable
 fun HardwarePanel(
     command: HardwareCommand,
+    seats: Map<SeatPosition, Boolean>,
+    selectedSeat: CabinSeat,
+    selectedPlace: CabinPlace,
+    onSelectSeat: (CabinSeat) -> Unit,
+    onSelectRear: (CabinPlace) -> Unit,
     forecast: Hint,
     probabilities: MotionProbabilities,
     settingsOpen: Boolean,
@@ -79,11 +99,12 @@ fun HardwarePanel(
     restKey: Int,
     modifier: Modifier,
 ) {
-    val motion = remember { SeatMotion() }
+    // One motion per seat, each following its own command.
+    val motions = remember { CabinPlace.entries.associateWith { place -> SeatMotion { it.of(place) } } }
     val frame = remember { mutableLongStateOf(0L) }
     val latest = rememberUpdatedState(command)
     LaunchedEffect(restKey) {
-        motion.reset()
+        motions.values.forEach { it.reset() }
         frame.longValue++
     }
     LaunchedEffect(Unit) {
@@ -92,24 +113,140 @@ fun HardwarePanel(
             withFrameNanos { now ->
                 val dtSec = if (lastNs == 0L) 0f else min(0.25f, (now - lastNs) / 1e9f)
                 lastNs = now
-                if (motion.step(dtSec, latest.value)) frame.longValue++
+                var moved = false
+                motions.values.forEach { if (it.step(dtSec, latest.value)) moved = true }
+                if (moved) frame.longValue++
             }
         }
     }
-    val front = remember { SeatRenderer(SeatCamera.FRONT, tiltSteps = 6) { it.rollDeg / HardwareMapping.MAX_LEAN_DEG.toFloat() } }
-    val side = remember { SeatRenderer(SeatCamera.SIDE, tiltSteps = 4) { it.pitchDeg / HardwareMapping.MAX_LEAN_DEG.toFloat() } }
+    val front = remember { SeatRenderer(SeatCamera.FRONT, 6, PASSENGER_SHAPE) { it.rollDeg / HardwareMapping.MAX_LEAN_DEG.toFloat() } }
+    val side = remember { SeatRenderer(SeatCamera.SIDE, 4, PASSENGER_SHAPE) { it.pitchDeg / HardwareMapping.MAX_LEAN_DEG.toFloat() } }
+    val rearFront = remember {
+        SeatRenderer(SeatCamera.FRONT, 6, REAR_ROW_SHAPE, REAR_VIEW_W) { it.rollDeg / HardwareMapping.MAX_LEAN_DEG.toFloat() }
+    }
+    val passengerSeat = seats[SeatPosition.ROW_1_RIGHT]
+    val rearLeft = seats[SeatPosition.ROW_2_LEFT]
+    val rearRight = seats[SeatPosition.ROW_2_RIGHT]
+    // A seat nobody sits in gets no command, so it stays still; it is also drawn faint.
+    val occupancy = seats.occupancy()
+    val empty = CabinPlace.entries.filterNot { occupancy.of(it) }.toSet()
+    val rearGauge = motions.getValue(if (selectedPlace.tab == CabinSeat.REAR) selectedPlace else CabinPlace.REAR_LEFT)
+    val onRear = selectedSeat == CabinSeat.REAR
+    // The pager is the source of truth while swiping; the view model's seat follows it, and a tab
+    // tap or a seat chosen elsewhere scrolls it.
+    val pager = rememberPagerState(initialPage = selectedSeat.ordinal) { CabinSeat.entries.size }
+    val select = rememberUpdatedState(onSelectSeat)
+    LaunchedEffect(pager) {
+        snapshotFlow { pager.currentPage }.collect { select.value(CabinSeat.entries[it]) }
+    }
+    LaunchedEffect(selectedSeat) {
+        if (pager.currentPage != selectedSeat.ordinal) pager.animateScrollToPage(selectedSeat.ordinal)
+    }
+    val scope = rememberCoroutineScope()
+    fun show(seat: CabinSeat) {
+        scope.launch { pager.animateScrollToPage(seat.ordinal) }
+    }
     Column(
         modifier = modifier.background(PanelColor).padding(horizontal = 12.dp, vertical = 16.dp),
         verticalArrangement = Arrangement.spacedBy(12.dp),
     ) {
         ForecastTitle(forecast, hintsOff, settingsOpen, onToggleSettings)
-        Row(Modifier.weight(1f).fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-            SeatView(front, motion, frame)
-            SeatView(side, motion, frame)
+        Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            val shownPage = pager.targetPage
+            SeatTab(CabinSeat.PASSENGER.label, listOf(TabPlace(null, passengerSeat)), shownPage == CabinSeat.PASSENGER.ordinal) {
+                show(CabinSeat.PASSENGER)
+            }
+            // A rear seat's chip opens the rear tab on that seat: the title, bars and settings follow it.
+            SeatTab(
+                CabinSeat.REAR.label,
+                listOf(
+                    TabPlace("좌", rearLeft, onRear && selectedPlace == CabinPlace.REAR_LEFT) {
+                        onSelectRear(CabinPlace.REAR_LEFT)
+                        show(CabinSeat.REAR)
+                    },
+                    TabPlace("우", rearRight, onRear && selectedPlace == CabinPlace.REAR_RIGHT) {
+                        onSelectRear(CabinPlace.REAR_RIGHT)
+                        show(CabinSeat.REAR)
+                    },
+                ),
+                shownPage == CabinSeat.REAR.ordinal,
+            ) { show(CabinSeat.REAR) }
+        }
+        // Swiping sideways moves between the seats; both keep moving while out of view.
+        HorizontalPager(pager, Modifier.weight(1f).fillMaxWidth(), pageSpacing = 16.dp) { page ->
+            when (CabinSeat.entries[page]) {
+                CabinSeat.PASSENGER -> Row(Modifier.fillMaxSize(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    val passenger = motions.getValue(CabinPlace.PASSENGER)
+                    SeatView(front, motions, passenger, empty, frame)
+                    SeatView(side, motions, passenger, empty, frame)
+                }
+                CabinSeat.REAR -> Row(Modifier.fillMaxSize()) {
+                    SeatView(rearFront, motions, rearGauge, empty, frame)
+                }
+            }
         }
         Row(Modifier.fillMaxWidth().height(116.dp), horizontalArrangement = Arrangement.spacedBy(24.dp)) {
             ProbabilityBars(probabilities, Modifier.weight(1f).fillMaxHeight())
-            WatchView(motion, frame, forecast, Modifier.width(130.dp).fillMaxHeight())
+            WatchView(motions.getValue(selectedPlace), frame, forecast, Modifier.width(130.dp).fillMaxHeight())
+        }
+    }
+}
+
+private const val EMPTY_SEAT_ALPHA = 0.35f
+private val TabSelected = Color(0x1A3AA0FF)
+
+private val ZERO_POSE = FloatArray(3)
+
+/** The rear row holds two seats and the console, so its view is wider than [SEAT_VIEW_W]. */
+private const val REAR_VIEW_W = 420f
+
+/** 착석 when reported taken, 미착석 when reported empty, 미확인 when never reported. */
+internal fun occupancyText(occupied: Boolean?) = when (occupied) {
+    true -> "착석"
+    false -> "미착석"
+    null -> "미확인"
+}
+
+/**
+ * One seat in a tab's header: [occupied] is null when the car never reported it. A [chosen] seat is
+ * the one the title, bars and settings follow; [onClick] picks it.
+ */
+private class TabPlace(val label: String?, val occupied: Boolean?, val chosen: Boolean = false, val onClick: (() -> Unit)? = null)
+
+/**
+ * One tab: the seat's name and, for each seat in it, whether someone sits there. The selected tab
+ * is underlined in amber.
+ */
+@Composable
+private fun RowScope.SeatTab(name: String, places: List<TabPlace>, selected: Boolean, onSelect: () -> Unit) {
+    Row(
+        Modifier
+            .weight(1f)
+            .height(56.dp)
+            .background(if (selected) TabSelected else Color.Transparent)
+            .drawBehind {
+                val line = if (selected) 3.dp.toPx() else 1.dp.toPx()
+                drawRect(if (selected) Amber else BracketColor, Offset(0f, size.height - line), Size(size.width, line))
+            }
+            .selectable(selected = selected, role = Role.Tab, onClick = onSelect)
+            .padding(horizontal = 14.dp),
+        verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.spacedBy(12.dp, Alignment.CenterHorizontally),
+    ) {
+        Text(name, color = if (selected) TextBright else TextDim, fontSize = 22.sp, fontWeight = FontWeight.Bold, maxLines = 1)
+        places.forEach { place ->
+            val occupied = place.occupied
+            val color = if (occupied == true) Amber else TextDim
+            val chip = Modifier
+                .then(if (place.chosen) Modifier.border(1.dp, Amber) else Modifier)
+                .then(place.onClick?.let { Modifier.clickable(onClick = it) } ?: Modifier)
+                .padding(horizontal = 6.dp, vertical = 4.dp)
+            Row(chip, verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(4.dp)) {
+                Canvas(Modifier.size(8.dp)) {
+                    if (occupied == true) drawCircle(color) else drawCircle(color, style = Stroke(1.5f))
+                }
+                Text(listOfNotNull(place.label, occupancyText(occupied)).joinToString(" "), color = color, fontSize = 16.sp, maxLines = 1)
+            }
         }
     }
 }
@@ -204,18 +341,24 @@ private fun ProbabilityBar(label: String, probability: Double) {
 }
 
 @Composable
-private fun RowScope.SeatView(renderer: SeatRenderer, motion: SeatMotion, frame: LongState) {
+private fun RowScope.SeatView(
+    renderer: SeatRenderer,
+    motions: Map<CabinPlace, SeatMotion>,
+    gauge: SeatMotion,
+    empty: Set<CabinPlace>,
+    frame: LongState,
+) {
     Canvas(Modifier.weight(1f).fillMaxHeight().clipToBounds()) {
         frame.longValue // Redraws only while something moves.
         drawGrid()
         drawBrackets()
-        val unit = min(size.width / SEAT_VIEW_W, size.height / SEAT_VIEW_H)
+        val unit = min(size.width / renderer.viewW, size.height / SEAT_VIEW_H)
         drawIntoCanvas { canvas ->
             val native = canvas.nativeCanvas
             native.save()
-            native.translate((size.width - SEAT_VIEW_W * unit) / 2, (size.height - SEAT_VIEW_H * unit) / 2)
+            native.translate((size.width - renderer.viewW * unit) / 2, (size.height - SEAT_VIEW_H * unit) / 2)
             native.scale(unit, unit)
-            renderer.draw(native, motion, unit)
+            renderer.draw(native, motions, gauge, empty, unit)
             native.restore()
         }
     }
@@ -319,15 +462,21 @@ private const val DOT_LEVELS = 8
 private const val TURNTABLE_STEPS = 6
 private const val DOT_CAPACITY = 8000
 
-/** Draws one view of the seat in [SEAT_VIEW_W] × [SEAT_VIEW_H] units. Buffers are reused between frames. */
+/**
+ * Draws one view of [shape] in [viewW] × [SEAT_VIEW_H] units, centred as a [SEAT_VIEW_W] view would be.
+ * Buffers are reused between frames.
+ */
 private class SeatRenderer(
     private val camera: SeatCamera,
     private val tiltSteps: Int,
+    private val shape: SeatShape,
+    val viewW: Float = SEAT_VIEW_W,
     private val tiltRatio: (SeatMotion) -> Float,
 ) {
-    private val screenX = SEAT_PARTS.map { FloatArray(it.vertices.size / 3) }
-    private val screenY = SEAT_PARTS.map { FloatArray(it.vertices.size / 3) }
-    private val faces = SEAT_PARTS.map { FloatArray(it.vertices.size / 3) }
+    private val dx = (viewW - SEAT_VIEW_W) / 2
+    private val screenX = shape.parts.map { FloatArray(it.part.vertices.size / 3) }
+    private val screenY = shape.parts.map { FloatArray(it.part.vertices.size / 3) }
+    private val faces = shape.parts.map { FloatArray(it.part.vertices.size / 3) }
     private val out = FloatArray(2)
 
     private val skin = List(SKIN_LEVELS) { Path() }
@@ -365,55 +514,97 @@ private class SeatRenderer(
 
     // The seat surface is the expensive part and holds still while it vibrates, so it stays in a bitmap.
     private var meshLayer: Bitmap? = null
-    private val meshPose = FloatArray(3) { Float.NaN }
-    private val meshPaint = Paint(Paint.FILTER_BITMAP_FLAG)
-    private val meshBounds = RectF(0f, 0f, SEAT_VIEW_W, SEAT_VIEW_H)
+    // Each part's pose and whether its seat is empty, as last drawn into the layer.
+    private val meshPose = FloatArray(shape.parts.size * 4) { Float.NaN }
+    private val restTransforms = shape.parts.map { transform(it, null, 0f) }
 
-    fun draw(canvas: NativeCanvas, motion: SeatMotion, unit: Float) {
-        val rotation = seatRotation(motion.rollDeg * DISPLAY_SCALE, motion.pitchDeg * DISPLAY_SCALE, motion.yawDeg * DISPLAY_SCALE)
-        canvas.drawBitmap(meshBitmap(motion, rotation, unit), null, meshBounds, meshPaint)
-        drawDots(canvas, rotation, motion)
-        drawTilt(canvas, tiltRatio(motion))
-        drawTurntable(canvas, motion.yawDeg * DISPLAY_SCALE)
+    /** A fixed part, or a part drawn at rest, keeps the rest pose. */
+    private fun transform(part: ShapePart, motion: SeatMotion?, scale: Float): FloatArray =
+        if (part.role == PART_FIXED || motion == null) {
+            partTransform(shape.kind, PART_CUSHION, ZERO_POSE, ZERO_POSE, ZERO_POSE, 0f, part.axisX, part.axisZ, part.pivotX)
+        } else {
+            partTransform(shape.kind, part.role, motion.roll, motion.pitch, motion.yaw, scale, part.axisX, part.axisZ, part.pivotX)
+        }
+    private val meshPaint = Paint(Paint.FILTER_BITMAP_FLAG)
+    private val meshBounds = RectF(0f, 0f, viewW, SEAT_VIEW_H)
+
+    /**
+     * [motions] gives each seat's motion, [gauge] the seat the tilt gauge follows. A seat in [empty]
+     * is drawn faint; its command already keeps it still.
+     */
+    fun draw(canvas: NativeCanvas, motions: Map<CabinPlace, SeatMotion>, gauge: SeatMotion, empty: Set<CabinPlace>, unit: Float) {
+        val partMotions = shape.parts.map { part -> part.place?.let { motions.getValue(it) } }
+        val transforms = shape.parts.mapIndexed { i, part -> transform(part, partMotions[i], DISPLAY_SCALE) }
+        canvas.drawBitmap(meshBitmap(partMotions, transforms, empty, unit), null, meshBounds, meshPaint)
+        drawDots(canvas, transforms, partMotions)
+        drawTilt(canvas, tiltRatio(gauge))
+        when (shape.kind) {
+            // The passenger seat turns on a turntable on the floor.
+            SeatKind.PASSENGER -> drawTurntable(canvas, gauge.yaw[PART_HEADREST] * DISPLAY_SCALE, -24f, 0f, SEAT_PIVOT_Z, 42f)
+            // A rear seat cannot turn: a small dial over each headrest shows that headrest's turn.
+            SeatKind.REAR -> shape.parts.forEachIndexed { i, part ->
+                val motion = partMotions[i]
+                if (part.role == PART_HEADREST && motion != null) {
+                    drawTurntable(canvas, motion.yaw[PART_HEADREST] * DISPLAY_SCALE, 92f, part.axisX, part.axisZ, 14f)
+                }
+            }
+        }
     }
 
-    private fun meshBitmap(motion: SeatMotion, rotation: FloatArray, unit: Float): Bitmap {
-        val width = (SEAT_VIEW_W * unit).roundToInt().coerceAtLeast(1)
+    private fun meshBitmap(partMotions: List<SeatMotion?>, transforms: List<FloatArray>, empty: Set<CabinPlace>, unit: Float): Bitmap {
+        val width = (viewW * unit).roundToInt().coerceAtLeast(1)
         val height = (SEAT_VIEW_H * unit).roundToInt().coerceAtLeast(1)
         val layer = meshLayer?.takeIf { it.width == width && it.height == height }
             ?: Bitmap.createBitmap(width, height, Bitmap.Config.ARGB_8888).also {
                 meshLayer = it
                 meshPose[0] = Float.NaN
             }
-        val pose = floatArrayOf(motion.rollDeg, motion.pitchDeg, motion.yawDeg)
+        val pose = FloatArray(meshPose.size)
+        shape.parts.forEachIndexed { i, part ->
+            val motion = partMotions[i]
+            val role = part.role.coerceAtLeast(0)
+            pose[i * 4] = motion?.roll?.get(role) ?: 0f
+            pose[i * 4 + 1] = motion?.pitch?.get(role) ?: 0f
+            pose[i * 4 + 2] = motion?.yaw?.get(role) ?: 0f
+            pose[i * 4 + 3] = if (part.place in empty) 1f else 0f
+        }
         if (pose.indices.all { abs(pose[it] - meshPose[it]) < POSE_REDRAW_DEG }) return layer
         pose.copyInto(meshPose)
         layer.eraseColor(android.graphics.Color.TRANSPARENT)
         val canvas = NativeCanvas(layer)
-        canvas.scale(width / SEAT_VIEW_W, height / SEAT_VIEW_H)
+        canvas.scale(width / viewW, height / SEAT_VIEW_H)
         canvas.drawPicture(rest)
-        drawMesh(canvas, rotation, 1f)
-        drawPosts(canvas, rotation)
+        // Only this view's own seats count: the passenger views skip the faint pass for an empty rear seat.
+        val faint = shape.parts.any { it.place in empty }
+        drawMesh(canvas, transforms, 1f) { it.place !in empty }
+        drawPosts(canvas, transforms) { it.place !in empty }
+        // An empty seat stays visible but faint, so the row still reads as a row.
+        if (faint) {
+            canvas.saveLayerAlpha(0f, 0f, viewW, SEAT_VIEW_H, (EMPTY_SEAT_ALPHA * 255).toInt())
+            drawMesh(canvas, transforms, 1f) { it.place in empty }
+            drawPosts(canvas, transforms) { it.place in empty }
+            canvas.restore()
+        }
         return layer
     }
 
     private fun recordRest(): android.graphics.Picture {
         val picture = android.graphics.Picture()
-        val canvas = picture.beginRecording(SEAT_VIEW_W.toInt(), SEAT_VIEW_H.toInt())
-        drawMesh(canvas, seatRotation(0f, 0f, 0f), 0.16f)
+        val canvas = picture.beginRecording(viewW.toInt(), SEAT_VIEW_H.toInt())
+        drawMesh(canvas, restTransforms, 0.16f)
         picture.endRecording()
         return picture
     }
 
-    /** Places a model point at the given rotation. */
-    private fun place(rotation: FloatArray, x: Float, y: Float, z: Float) {
-        val z0 = z - SEAT_PIVOT_Z
+    /** Places a model point by a [partTransform]. */
+    private fun place(tf: FloatArray, x: Float, y: Float, z: Float) {
         camera.project(
-            rotation[0] * x + rotation[1] * y + rotation[2] * z0,
-            rotation[3] * x + rotation[4] * y + rotation[5] * z0,
-            rotation[6] * x + rotation[7] * y + rotation[8] * z0 + SEAT_PIVOT_Z,
+            tf[0] * x + tf[1] * y + tf[2] * z + tf[9],
+            tf[3] * x + tf[4] * y + tf[5] * z + tf[10],
+            tf[6] * x + tf[7] * y + tf[8] * z + tf[11],
             out,
         )
+        out[0] += dx
     }
 
     private fun facing(rotation: FloatArray, x: Float, y: Float, z: Float) = camera.facing(
@@ -423,13 +614,16 @@ private class SeatRenderer(
     )
 
     /** A faint rim-lit skin, a smooth silhouette and a few curved seams instead of a wire grid. */
-    private fun drawMesh(canvas: NativeCanvas, rotation: FloatArray, opacity: Float) {
+    private fun drawMesh(canvas: NativeCanvas, transforms: List<FloatArray>, opacity: Float, include: (ShapePart) -> Boolean = { true }) {
         skin.forEach { it.rewind() }
         edge.clear()
         rim.clear()
         seamFront.clear()
         seamBack.clear()
-        SEAT_PARTS.forEachIndexed { index, part ->
+        shape.parts.forEachIndexed { index, shapePart ->
+            if (!include(shapePart)) return@forEachIndexed
+            val part = shapePart.part
+            val rotation = transforms[index]
             val sx = screenX[index]
             val sy = screenY[index]
             val nd = faces[index]
@@ -475,7 +669,7 @@ private class SeatRenderer(
             }
         }
         val layer = opacity < 1f
-        if (layer) canvas.saveLayerAlpha(0f, 0f, SEAT_VIEW_W, SEAT_VIEW_H, (opacity * 255).toInt())
+        if (layer) canvas.saveLayerAlpha(0f, 0f, viewW, SEAT_VIEW_H, (opacity * 255).toInt())
         skin.forEachIndexed { i, path -> canvas.drawPath(path, skinPaint[i]) }
         seamBack.draw(canvas, seamBackLine)
         seamFront.draw(canvas, seamFrontLine)
@@ -511,25 +705,30 @@ private class SeatRenderer(
         crossing(d, a)
     }
 
-    private fun drawPosts(canvas: NativeCanvas, rotation: FloatArray) {
+    private fun drawPosts(canvas: NativeCanvas, transforms: List<FloatArray>, include: (ShapePart) -> Boolean) {
         gaugeLines.clear()
-        for (x in floatArrayOf(-6f, 6f)) {
-            place(rotation, x, 62f, -23f)
+        shape.posts.forEach { post ->
+            if (!include(shape.parts[post.partIndex])) return@forEach
+            place(transforms[post.partIndex], post.x, post.y0, post.z0)
             val ax = out[0]
             val ay = out[1]
-            place(rotation, x, 70f, -21f)
+            place(transforms[post.partIndex], post.x, post.y1, post.z1)
             gaugeLines.add(ax, ay, out[0], out[1])
         }
         gaugeLines.draw(canvas, edgeLine)
     }
 
     /** Dots sit on the surface, so every zone reads in both views; far-side dots show through dimly. */
-    private fun drawDots(canvas: NativeCanvas, rotation: FloatArray, motion: SeatMotion) {
+    private fun drawDots(canvas: NativeCanvas, transforms: List<FloatArray>, partMotions: List<SeatMotion?>) {
         dots.forEach { it.clear() }
         halos.clear()
-        SEAT_PARTS.forEachIndexed { index, part ->
-            val strengths = motion.vibration[index]
-            val phases = motion.phase[index]
+        shape.parts.forEachIndexed { index, shapePart ->
+            val motion = partMotions[index]
+            if (shapePart.role == PART_FIXED || motion == null) return@forEachIndexed
+            val part = shapePart.part
+            val rotation = transforms[index]
+            val strengths = motion.vibration[shapePart.role]
+            val phases = motion.phase[shapePart.role]
             if (strengths.all { it < ZONE_ACTIVE }) return@forEachIndexed
             val d = part.dots
             for (i in 0 until d.count) {
@@ -559,7 +758,7 @@ private class SeatRenderer(
 
     /** One tilt gauge above the seat. Its ends are the lean limit; [ratio] is the angle's share of it. */
     private fun drawTilt(canvas: NativeCanvas, ratio: Float) {
-        val cx = 145f
+        val cx = 145f + dx
         val cy = 354f
         val r = 296f
         val sweep = tiltSteps * 2 * PI.toFloat() / 180
@@ -598,15 +797,17 @@ private class SeatRenderer(
         canvas.drawPath(triangle, if (moved) pointerFill else idleFill)
     }
 
-    /** One turntable on the floor under the seat, a true circle in both views. 0 points straight ahead. */
-    private fun drawTurntable(canvas: NativeCanvas, yawDeg: Float) {
+    /**
+     * A level dial at height [y] around the upright axis through ([centerX], [centerZ]), a true circle
+     * in both views: the turntable under the seat, or a headrest's dial on the bench. 0 points ahead.
+     */
+    private fun drawTurntable(canvas: NativeCanvas, yawDeg: Float, y: Float, centerX: Float, centerZ: Float, radius: Float) {
         val yaw = yawDeg * PI.toFloat() / 180
         val steps = TURNTABLE_STEPS
         val full = (HardwareMapping.MAX_YAW_DEG * DISPLAY_SCALE).toFloat() * PI.toFloat() / 180
-        val radius = 42f
         fun at(a: Float, r: Float): Pair<Float, Float> {
-            camera.project(-r * sin(a), -24f, SEAT_PIVOT_Z + r * cos(a), out)
-            return out[0] to out[1]
+            camera.project(centerX - r * sin(a), y, centerZ + r * cos(a), out)
+            return out[0] + dx to out[1]
         }
         gaugeLines.clear()
         var previous = at(0f, radius)

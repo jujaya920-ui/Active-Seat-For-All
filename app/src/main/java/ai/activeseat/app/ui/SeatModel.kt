@@ -2,6 +2,7 @@ package ai.activeseat.app.ui
 
 import ai.activeseat.app.hardware.HardwareCommand
 import ai.activeseat.app.hardware.ModuleCommand
+import ai.activeseat.app.hardware.SeatCommand
 import kotlin.math.PI
 import kotlin.math.abs
 import kotlin.math.acos
@@ -25,8 +26,21 @@ const val PART_CUSHION = 0
 const val PART_BACKREST = 1
 const val PART_HEADREST = 2
 
+/** A fixed part of the car, such as the centre console: it never moves or vibrates. */
+const val PART_FIXED = -1
+
 /** The seat turns and tilts about this point, in model units. */
 const val SEAT_PIVOT_Z = -5f
+
+/** The passenger seat's headrest centre depth; a rear headrest sets its own. */
+const val HEADREST_AXIS_Z = -21f
+
+/**
+ * The front passenger seat sits on a turntable and moves as one. A rear seat has no room to turn,
+ * since the centre console stands beside it: its headrest turns on its own and rides on the
+ * backrest, the cushion rolls, backrest and cushion pitch.
+ */
+enum class SeatKind { PASSENGER, REAR }
 
 /** The canvas the two seat views are drawn in, in the units [SeatCamera.project] returns. */
 const val SEAT_VIEW_W = 291f
@@ -43,9 +57,16 @@ private const val WAVE_STRENGTH_SPEEDUP_SEC = 0.9f
 private const val SETTLED = 0.002f
 const val ZONE_ACTIVE = 0.02f
 
-private typealias Surface = (u: Float, a: Float) -> FloatArray
+internal typealias Surface = (u: Float, a: Float) -> FloatArray
 
-private class PartSpec(
+/** A stitched line on a part: the surface position (u, angle) at 0..1 along it. */
+internal class SeamCurve(val steps: Int, val at: (Float) -> Pair<Float, Float>)
+
+/**
+ * [localX] maps model x to x across the part's own seat, so a seat placed off the model's centre
+ * still has its own left and right vibration zones.
+ */
+internal class PartSpec(
     val rows: Int,
     val cols: Int,
     val spanCm: Float,
@@ -53,6 +74,8 @@ private class PartSpec(
     val seams: FloatArray,
     val crossSeams: FloatArray,
     val center: (Float) -> Float,
+    val localX: (Float) -> Float = { it },
+    val curves: List<SeamCurve> = emptyList(),
     val surface: Surface,
 )
 
@@ -80,12 +103,12 @@ class SeatPart(
     val dots: SeatDots,
 )
 
-private fun sup(c: Float, power: Float) = c.sign * abs(c).pow(power)
-private fun taper(u: Float, power: Float) = sqrt(maxOf(0f, 1f - abs(2 * u - 1).pow(power)))
-private fun dish(x: Float, w: Float, depth: Float) = depth * (1 - min(1f, x * x / (w * w)))
+internal fun sup(c: Float, power: Float) = c.sign * abs(c).pow(power)
+internal fun taper(u: Float, power: Float) = sqrt(maxOf(0f, 1f - abs(2 * u - 1).pow(power)))
+internal fun dish(x: Float, w: Float, depth: Float) = depth * (1 - min(1f, x * x / (w * w)))
 
 /** Soft padding: a raised centre panel and side bolsters with a stitched groove between them. */
-private fun pad(t: Float, u: Float, bands: Float): Float {
+internal fun pad(t: Float, u: Float, bands: Float): Float {
     val m = abs(t)
     val core = 0.55f
     if (m < core) {
@@ -177,20 +200,21 @@ private fun buildDots(spec: PartSpec, random: () -> Float): SeatDots {
             fore += p[2] - spec.center(u)
         }
     }
-    val reachX = points.maxOf { abs(it[0]) }
+    val side = points.map { spec.localX(it[0]) }
+    val reachX = side.maxOf { abs(it) }
     val reachZ = fore.maxOf { abs(it) }
     return SeatDots(
         positions = FloatArray(points.size * 3).also { out -> points.forEachIndexed { i, p -> out.put(i, p) } },
         normals = FloatArray(points.size * 3).also { out -> normals.forEachIndexed { i, n -> out.put(i, n) } },
-        sideZone = IntArray(points.size) { if (points[it][0] < 0) ZONE_LEFT else ZONE_RIGHT },
+        sideZone = IntArray(points.size) { if (side[it] < 0) ZONE_LEFT else ZONE_RIGHT },
         lengthZone = IntArray(points.size) { if (fore[it] < 0) ZONE_BACK else ZONE_FRONT },
-        sideReach = FloatArray(points.size) { abs(points[it][0]) / reachX },
+        sideReach = FloatArray(points.size) { abs(side[it]) / reachX },
         lengthReach = FloatArray(points.size) { abs(fore[it]) / reachZ },
         rank = FloatArray(points.size) { random() },
     )
 }
 
-private fun buildPart(spec: PartSpec, random: () -> Float): SeatPart {
+internal fun buildPart(spec: PartSpec, random: () -> Float): SeatPart {
     val count = spec.rows * spec.cols
     val vertices = FloatArray(count * 3)
     val normals = FloatArray(count * 3)
@@ -204,7 +228,8 @@ private fun buildPart(spec: PartSpec, random: () -> Float): SeatPart {
     }
     val angle = { t: Float -> acos(t.sign * abs(t).pow(1 / spec.power)) }
     val seams = spec.seams.map { t -> seamLine(spec, 40) { step -> 0.06f + 0.88f * step to angle(t) } } +
-        spec.crossSeams.map { u -> seamLine(spec, 24) { step -> u to angle(-0.55f + 1.1f * step) } }
+        spec.crossSeams.map { u -> seamLine(spec, 24) { step -> u to angle(-0.55f + 1.1f * step) } } +
+        spec.curves.map { curve -> seamLine(spec, curve.steps, curve.at) }
     return SeatPart(spec.rows, spec.cols, vertices, normals, seams, buildDots(spec, random))
 }
 
@@ -233,6 +258,43 @@ private fun multiply(a: FloatArray, b: FloatArray) = FloatArray(9) { i ->
     val row = i / 3
     val col = i % 3
     a[row * 3] * b[col] + a[row * 3 + 1] * b[3 + col] + a[row * 3 + 2] * b[6 + col]
+}
+
+/**
+ * Where one part of a seat goes for display angles in degrees, as 12 floats: a 3×3 rotation then a
+ * translation, so a model point p lands at R·p + t. [part] is the PART_* module that moves it. The
+ * seat pose turns about the point ([pivotX], 0, [SEAT_PIVOT_Z]), the centre of the part's own seat;
+ * on the rear seats a headrest first turns about its own upright axis through ([axisX], [axisZ]),
+ * then rides on the backrest's pose.
+ */
+fun partTransform(
+    kind: SeatKind,
+    part: Int,
+    rollDeg: FloatArray,
+    pitchDeg: FloatArray,
+    yawDeg: FloatArray,
+    scale: Float,
+    axisX: Float = 0f,
+    axisZ: Float = HEADREST_AXIS_Z,
+    pivotX: Float = 0f,
+): FloatArray {
+    val carrier = if (kind == SeatKind.REAR && part == PART_HEADREST) PART_BACKREST else part
+    val seatYaw = if (kind == SeatKind.PASSENGER) yawDeg[part] * scale else 0f
+    val seat = seatRotation(rollDeg[carrier] * scale, pitchDeg[carrier] * scale, seatYaw)
+    val localYaw = if (kind == SeatKind.REAR && part == PART_HEADREST) yawDeg[PART_HEADREST] * scale * PI.toFloat() / 180 else 0f
+    val c = cos(localYaw)
+    val sn = sin(localYaw)
+    val turn = floatArrayOf(c, 0f, -sn, 0f, 1f, 0f, sn, 0f, c)
+    val m = multiply(seat, turn)
+    // R_seat · (a - R_turn·a - h) + h, with a the headrest axis and h the seat pivot.
+    val vx = axisX - c * axisX + sn * axisZ - pivotX
+    val vz = axisZ - sn * axisX - c * axisZ - SEAT_PIVOT_Z
+    return floatArrayOf(
+        m[0], m[1], m[2], m[3], m[4], m[5], m[6], m[7], m[8],
+        seat[0] * vx + seat[2] * vz + pivotX,
+        seat[3] * vx + seat[5] * vz,
+        seat[6] * vx + seat[8] * vz + SEAT_PIVOT_Z,
+    )
 }
 
 /**
@@ -285,17 +347,22 @@ fun swell(strength: Float, phase: Float, reach: Float): Float {
 }
 
 /**
- * Eases the panel toward the latest command and runs the vibration swells. The pose follows the
- * command through four first-order stages, so it starts very slowly, runs fast in the middle and
- * settles very slowly, reaching 95% at [HardwareCommand.leanSec]. Vibration and the watch ease as before.
+ * Eases one seat on the panel toward the latest command and runs its vibration swells. Each part's
+ * pose follows its module through four first-order stages, so it starts very slowly, runs fast in
+ * the middle and settles very slowly, reaching 95% at [HardwareCommand.leanSec]. Vibration and the
+ * watch ease as before. [pick] chooses the seat this one shows.
  */
-class SeatMotion {
-    var rollDeg = 0f
-        private set
-    var pitchDeg = 0f
-        private set
-    var yawDeg = 0f
-        private set
+class SeatMotion(private val pick: (HardwareCommand) -> SeatCommand = { it.passenger }) {
+    /** By PART_*: each part's own pose. On the passenger seat all three are the same. */
+    val roll = FloatArray(3)
+    val pitch = FloatArray(3)
+    val yaw = FloatArray(3)
+
+    /** The cushion's roll and pitch and the headrest's turn: the whole seat's pose on the passenger seat. */
+    val rollDeg: Float get() = roll[PART_CUSHION]
+    val pitchDeg: Float get() = pitch[PART_CUSHION]
+    val yawDeg: Float get() = yaw[PART_HEADREST]
+
     var watch = 0f
         private set
     var timeSec = 0f
@@ -305,16 +372,16 @@ class SeatMotion {
     val vibration = Array(3) { FloatArray(4) }
     val phase = Array(3) { FloatArray(4) }
 
-    // Roll, pitch and yaw, each through LEAN_STAGES stages; the last stage is the pose.
-    private val stages = Array(3) { FloatArray(LEAN_STAGES) }
+    // By PART_*, then roll, pitch and yaw, each through LEAN_STAGES stages; the last stage is the pose.
+    private val stages = Array(3) { Array(3) { FloatArray(LEAN_STAGES) } }
 
     /** Puts the seat, vibration and watch back at rest at once. */
     fun reset() {
-        rollDeg = 0f
-        pitchDeg = 0f
-        yawDeg = 0f
+        roll.fill(0f)
+        pitch.fill(0f)
+        yaw.fill(0f)
         watch = 0f
-        stages.forEach { it.fill(0f) }
+        stages.forEach { part -> part.forEach { it.fill(0f) } }
         vibration.forEach { it.fill(0f) }
         phase.forEach { it.fill(0f) }
     }
@@ -323,7 +390,8 @@ class SeatMotion {
     fun step(dtSec: Float, command: HardwareCommand): Boolean {
         val a = 1 - exp(-dtSec / MOTION_TAU_SEC)
         // Exact per stage, so a long frame cannot overshoot. A zero time snaps.
-        val leanSec = command.leanSec.toFloat()
+        val seat = pick(command)
+        val leanSec = seat.leanSec.toFloat()
         val aLean = if (leanSec > 0f) 1 - exp(-dtSec * LEAN_STAGE_RATE / leanSec) else 1f
         timeSec += dtSec
         var moving = false
@@ -340,12 +408,11 @@ class SeatMotion {
             }
             return input
         }
-        val pose = command.headrest
-        rollDeg = lean(stages[0], pose.rollDeg.toFloat())
-        pitchDeg = lean(stages[1], pose.pitchDeg.toFloat())
-        yawDeg = lean(stages[2], pose.yawDeg.toFloat())
-        watch = ease(watch, command.watchStrength.toFloat())
-        listOf(command.cushion, command.backrest, command.headrest).forEachIndexed { part, module ->
+        watch = ease(watch, seat.watchStrength.toFloat())
+        listOf(seat.cushion, seat.backrest, seat.headrest).forEachIndexed { part, module ->
+            roll[part] = lean(stages[part][0], module.rollDeg.toFloat())
+            pitch[part] = lean(stages[part][1], module.pitchDeg.toFloat())
+            yaw[part] = lean(stages[part][2], module.yawDeg.toFloat())
             val targets = zoneTargets(module)
             for (zone in 0..3) {
                 val v = ease(vibration[part][zone], targets[zone])
