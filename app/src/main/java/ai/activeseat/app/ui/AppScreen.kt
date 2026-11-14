@@ -11,7 +11,6 @@ import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
 import androidx.compose.material3.MaterialTheme
-import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.darkColorScheme
@@ -30,7 +29,6 @@ fun AppScreen(
     onToggleSettings: () -> Unit,
     onSelectSeat: (CabinSeat) -> Unit,
     onSelectRear: (CabinPlace) -> Unit,
-    onRequestSpeedPermission: () -> Unit,
 ) {
     MaterialTheme(colorScheme = darkColorScheme()) {
         Surface(modifier = Modifier.fillMaxSize()) {
@@ -57,7 +55,7 @@ fun AppScreen(
                         restKey = ui.restKey,
                         modifier = Modifier.weight(1f).fillMaxWidth(),
                     )
-                    ControlBar(ui, player, onRequestSpeedPermission)
+                    ControlBar(ui, player)
                 }
             }
         }
@@ -68,15 +66,11 @@ fun AppScreen(
 private fun ControlBar(
     ui: UiState,
     player: PlayerState,
-    onRequestSpeedPermission: () -> Unit,
 ) {
     Column(
         modifier = Modifier.fillMaxWidth().padding(16.dp),
         verticalArrangement = Arrangement.spacedBy(8.dp),
     ) {
-        if (!ui.speedConnected) {
-            OutlinedButton(onClick = onRequestSpeedPermission) { Text("속도 권한 허용 (P단에서)") }
-        }
         Text(
             text = status(ui, player),
             style = MaterialTheme.typography.bodyLarge,
