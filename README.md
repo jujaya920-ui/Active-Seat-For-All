@@ -67,17 +67,36 @@ node tools/console-proxy.js
 
 ## 동작 방식
 
-0.2초마다 차량 신호를 읽고, 가장 최근 내비 보고(1초마다 옴)와 함께 앱 안의 규칙 엔진에 넣습니다. 내비 보고 사이에는 엔진이 주행 거리로 남은 거리를 줄여 갑니다. 좌석마다 시트와 워치가 각자의 민감도로 엔진을 따로 돌립니다(3좌석 × 2, 최대 6개. 민감도 0이면 그 엔진은 꺼집니다).
+내비 보고 사이에는 규칙 엔진이 주행 거리로 남은 거리를 줄여 갑니다. 좌석마다 시트와 워치가 각자의 민감도로 엔진을 따로 돌립니다(3좌석 × 2, 최대 6개. 민감도 0이면 그 엔진은 꺼집니다).
 
 ```mermaid
-flowchart LR
-    V[차량 신호<br/>속도, 기어, 핸들,<br/>방향지시등, 좌석] --> S[0.2초 표본]
-    S --> G{좌석마다 ON/OFF<br/>기어, 착석, 민감도}
-    G --> E[규칙 엔진<br/>실측 → 예측]
-    N[내비 보고<br/>TBT, 과속 카메라, 주의 지점] --> E
-    E --> H[하드웨어 명령<br/>기울기, 회전, 진동]
-    U[사용자 설정] --> H
-    H --> D[가상 시트와 워치 표시]
+sequenceDiagram
+    autonumber
+    participant SC as 시나리오<br/>(시연용)
+    participant VC as 버추얼콘솔
+    participant CAR as 차량
+    participant NAV as 내비게이션<br/>(시연용)
+    participant APP as 앱
+
+    SC->>NAV: 목적지 선택 시 경로 데이터 (안내 경로, 실제 주행 경로, 이탈 지점)
+    SC->>NAV: 출발 시 시작 위치 (시연 구간 시작점)
+    Note over SC,VC: 0.8초마다 세션 유지 신호
+    loop 0.2초마다 (재생 중)
+        SC->>VC: 속도, 조향, 페달, 방향지시등
+        VC->>CAR: 차량 상태 변경
+    end
+    CAR-->>APP: 리스너 콜백 (비동기). 앱은 최신값만 저장
+    loop 0.2초마다
+        APP->>APP: 0.2초 표본 (저장해 둔 최신값을 한 묶음으로 읽음)
+        APP->>NAV: 표본의 속도 전달 (내비가 적분해 경로 위 위치 계산)
+        Note over NAV: 이탈 지점을 지나면 스스로 재탐색
+        opt 약 1초마다 (표본 5번에 1번)
+            NAV-->>APP: TBT(회전 안내), 과속 카메라, 주의 지점 (NaviHelper 리스너). 앱은 받은 목록을 저장
+        end
+        APP->>APP: 좌석마다 ON/OFF 확인(민감도, 기어, 그 좌석 착석) 후 규칙 엔진 (시트, 워치) → Hint
+        APP->>APP: 좌석마다 사용자 설정 적용 → HardwareCommand (조수석, 뒷좌석 좌우)
+        APP->>APP: 가상 시트와 워치 표시
+    end
 ```
 
 SDK는 차량 정보를 받는 데만 쓰고, 차량을 제어하는 SDK는 쓰지 않습니다.
@@ -90,7 +109,7 @@ SDK는 차량 정보를 받는 데만 쓰고, 차량을 제어하는 SDK는 쓰�
 | `distractionOptimized` 선언 | | 주행 중 실행 |
 | Virtual Console (HTTP) | | 시연용 주행 시나리오 재생. 제품 코드와 분리 |
 
-자세한 규칙과 수치는 [docs/HardwareControl.md](docs/HardwareControl.md)에 있습니다.
+규칙 엔진의 판단 규칙과 수치는 [docs/HardwareControl.md](docs/HardwareControl.md)에 있습니다.
 
 ## 시연 구성
 
